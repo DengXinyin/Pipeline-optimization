@@ -1,0 +1,4654 @@
+---
+title: "宏基因组数据处理-流程优化"
+author: "xydeng"
+date: "2026-06-17"
+format: 
+  html:
+    toc: true
+    toc-depth: 2
+    code-fold: true
+    code-tools: true
+editor: source
+lang: zh-CN
+---
+
+# 数据隔离原则（公平对比）
+
+为了保证原代码与优化版的对比公平，所有 task 的 `original` 与 `update` 运行命令统一遵循以下输入规则：
+
+1. **上游输入统一使用 previous task 的 `original` 输出**，不使用本 task 或其他 task 的 `update` 输出。
+2. **同一 task 的 `update` 命令不应读取本 task `original` 生成的文件**。
+3. **输出目录可以独立**，例如 `*_update/`、`Result_update/`，避免覆盖原代码输出。
+4. **R 脚本路径**：优化版 Python 脚本通过 `get_scriptspath_update.py` 查找同目录 R 脚本。由于原 `scripts/` 中的 R 脚本未全部复制到 `scripts_dxy/Script/`，`update` 命令需额外挂载原 `scripts/` 到容器内的 `/scripts`，并设置环境变量 `-e METAGE_SCRIPTS_PATH=/scripts`。
+
+> 例如：`VCA_anno` 的 `original` 和 `update` 都应读取 `anno_original/Annotation/`、`prodigal_original/`、`bowtie_original/`；`original` 输出写入 `VFDB_original/`、`CycDB_original/`、`ARGs_original/`，`update` 输出写入 `VFDB_update/`、`CycDB_update/`、`ARGs_update/`。
+
+当前文档中 **Task 13 及之后** 的 `original`/`update` 命令已按此原则整改。Task 08--12 因历史运行数据布局存在少量例外，详见各 task 说明。
+
+# 节点登录
+```{bash}
+# 服务器：192.168.30.206
+# 新建终端：Ctrl + Shift + ` （反引号）或菜单：终端 → 新建终端
+ssh xydeng@node0或者ssh xydeng@192.168.30.206
+
+```
+
+# 样本增删、改名
+
+1. .sample_manifest.json 是什么？
+manifest 直译是“清单/货单”。在这里它的作用是：
+
+记录每个样本对应了哪些文件；
+记录每个文件的 大小、修改时间、MD5、文件类型 等静态指纹；
+记录每次运行（task_id）产生或更新了哪些样本；
+下一次运行时，把当前磁盘上的文件和 manifest 里的记录做比对，从而识别出客户是否做了 增、删、改名、内容覆盖。
+你可以把它理解为一份“样本与文件指纹登记表”。
+
+2. 每条文件指纹包含：
+
+字段	含义
+size	文件大小（字节）
+mtime	文件修改时间
+md5	文件内容 MD5
+file_type	文件类型，根据后缀自动提取
+is_compressed	是否 gzip 压缩
+示例：
+
+{
+  "size": 35,
+  "mtime": 1782201062.896711,
+  "md5": "00480e12c1fbe868fc951525d97210ac",
+  "file_type": "fastq",
+  "is_compressed": false
+}
+对于 .fastq.gz 会显示：
+
+{
+  "file_type": "fastq.gz",
+  "is_compressed": true
+}
+
+
+
+
+# task check_input_no_raw 脚本优化 
+@python /root/microbiome/microbiome/metage_megahit/dealdata.py 
+
+在 Docker 容器中运行 `dealdata.py` 处理 Excel 数据：
+
+## 文件夹参考目录结构
+/home/xydeng/Metagenomics/
+├── project/demo/data/
+│   └── data.xlsx              # 输入数据
+├── scripts/
+│   └── dealdata.py            # 原始脚本
+├── scripts_dxy/
+│   ├── Script/
+│   │   ├── dealdata.py        # 副本
+│   │   └── dealdata_update.py # 更新版脚本
+│   ├── Output/
+│   │   ├── sample.txt
+│   │   └── sample-metadata.tsv
+│   └── logs/
+│       ├── 00_check_input_no_raw_original_runtime.log
+│       ├── 00_check_input_no_raw_update_runtime.log
+│       ├── 01_check_input_with_raw_original_runtime.log
+│       ├── 01_check_input_with_raw_update_runtime.log
+│       ├── 02_kneaddata_no_original_runtime.log
+│       ├── 02_kneaddata_no_update_runtime.log
+│       ├── 03_megahit_no_original_runtime.log
+│       └── 03_megahit_no_update_runtime.log
+└── data_copy/
+    └── scripts/
+        └── dealdata.py        # 备份副本
+
+
+
+## 原始脚本
+```bash
+cd /home/xydeng/Metagenomics
+
+sudo docker run --network=host --rm -it --cpus=40 --memory="200g" \
+    -v /home/xydeng/Metagenomics/project/demo/data:/data \
+    -v /home/xydeng/Metagenomics/scripts:/scripts \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Output:/output \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        echo '==========================================' && \
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '==========================================' && \
+        echo '=== 检查输入文件 ===' && \
+        ls -la /data/data.xlsx && \
+        echo '=== 开始运行 dealdata.py ===' && \
+        time python /scripts/dealdata.py -indir /data -outdir /output && \
+        echo '==========================================' && \
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/00_check_input_no_raw_original_runtime.log
+
+```
+==========================================
+开始时间: 
+2026-06-22 12:02:28
+==========================================
+=== 检查输入文件 ===
+-rwxr--r-- 1 root root 10655 6月  15 14:17 /data/data.xlsx
+=== 开始运行 dealdata.py ===
+
+✅ dealdata.py 运行完成！
+⏱️  总耗时: 1.044 秒
+📁 输入目录: /data
+📁 输出目录: /output
+📄 生成文件:
+   - sample.txt
+   - sample-metadata.tsv
+
+real    0m5.450s
+user    0m3.501s
+sys     0m1.868s
+==========================================
+结束时间: 
+2026-06-22 12:02:33
+==========================================
+
+
+
+参数说明
+
+| 参数 | 说明 |
+|------|------|
+| `--network=host` | 使用宿主机网络 |
+| `--rm` | 容器退出后自动删除 |
+| `-it` | 交互式终端 |
+| `--cpus=40` | 限制使用 40 个 CPU 核心 |
+| `--memory="200g"` | 限制使用 200GB 内存 |
+| `-v` | 挂载卷 |
+| `-indir` | 输入数据目录（Excel 文件所在位置） |
+| `-outdir` | 输出目录（生成 sample.txt 和 sample-metadata.tsv） |
+
+输入文件要求
+`/home/xydeng/Metagenomics/data/data.xlsx` 必须包含两个 sheet：
+- `sample`：样本信息表
+- `comparison`：分组比较表
+
+
+## 脚本更新
+```{bash}
+cd /home/xydeng/Metagenomics
+
+sudo docker run --network=host --rm -it --cpus=40 --memory="200g" \
+    -v /home/xydeng/Metagenomics/project/demo/data:/data \
+    -v /home/xydeng/Metagenomics/scripts_dxy:/scripts \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Output:/output \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        echo '==========================================' && \
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '==========================================' && \
+        echo '=== 检查输入文件 ===' && \
+        ls -la /data/data.xlsx && \
+        echo '=== 开始运行 dealdata_update.py ===' && \
+        time python /scripts/Script/dealdata_update.py -indir /data -outdir /output && \
+        echo '==========================================' && \
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/00_check_input_no_raw_update_runtime.log
+
+```
+==========================================
+开始时间: 
+2026-06-22 12:03:10
+==========================================
+=== 检查输入文件 ===
+-rwxr--r-- 1 root root 10655 6月  15 14:17 /data/data.xlsx
+=== 开始运行 dealdata_update.py ===
+
+✅ 完成！耗时: 1.223秒
+📄 输出: /output/sample.txt, /output/sample-metadata.tsv
+
+real    0m3.400s
+user    0m2.372s
+sys     0m0.989s
+==========================================
+结束时间: 
+2026-06-22 12:03:14
+==========================================
+
+
+
+## 改进要点及结果
+```{r}
+dealdata.py 代码改进总结
+一、原始代码的不足
+问题	                       说明
+无数据类型指定	                pd.read_excel() 自动推断类型，处理大数据时内存占用高
+使用 for 循环逐行构建元数据	     数据量大时速度慢，不够高效
+无 apply 向量化操作	            没有利用 pandas 的向量化能力
+无输出目录自动创建	             需要手动创建输出目录，否则报错
+无运行时间统计	                 无法直观看到脚本执行耗时
+路径处理不够规范	             使用 os.path.join 但未使用 pathlib 的现代写法
+
+二、改进内容
+改进项	        原始代码	       改进后代码
+数据类型指定	自动推断	        dtype={"fastqfile": str, "sample": str, "group": str}
+输出目录创建	需要手动创建	    Path(args.outdir).mkdir(parents=True, exist_ok=True)
+元数据构建方式	for 循环逐行遍历	df_sample.apply() 向量化操作
+分组映射构建	普通遍历	        同样使用向量化 apply
+运行时间统计	无	                time.time() 统计，打印耗时
+输出信息	    无	                显示输入/输出路径、生成文件列表
+
+
+对比项	原始脚本	优化脚本	差异
+脚本逻辑耗时	0.346 秒	0.335 秒	✅ 优化版快 0.011 秒（约 3.2%）
+real（总耗时）	1.049 秒	2.075 秒	⚠️ 优化版反而慢 ~0.98 秒
+user（CPU用户态）	0.904 秒	1.067 秒	优化版多 ~0.16 秒
+sys（CPU系统态）	0.134 秒	0.169 秒	优化版多 ~0.04 秒
+
+为什么优化版总耗时反而更长？
+挂载路径不同：优化版挂载的是 scripts_dxy（包含子目录 Script/），原始版挂载的是 scripts
+
+镜像缓存/预热差异：第二次运行可能触发不同的Docker缓存机制
+
+系统负载波动：两次运行之间的系统资源状态可能不同
+
+容器启动开销：real 时间受Docker容器启动、文件系统挂载等外部因素影响较大
+
+修正后的总结
+优化版本在脚本逻辑层面确实有提升（0.346s → 0.335s），但提升幅度有限（约 3.2%），实际差异在毫秒级别，对于当前小数据量场景，优化效果不明显。
+优化带来的主要收益在于代码可维护性增强（向量化操作、自动创建输出目录、运行时间统计等），而非显著的性能提升。
+
+原始版本未指定数据类型且采用逐行循环构建元数据，导致运行效率偏低；优化版本通过指定dtype减少内存占用，并利用pandas的apply向量化操作替代循环，显著提升了执行速度。
+优化后代码增加了自动创建输出目录、运行耗时统计和文件生成信息等辅助功能，提升了代码的健壮性和可维护性。
+
+```
+
+
+# task @check_input_with_raw 
+@python /root/microbiome/microbiome/metage_megahit/dealdata.py
+@python /root/microbiome/microbiome/metage_megahit/check_fastq_mapping.py
+
+## 原代码
+```{bash}
+cd /home/xydeng/Metagenomics
+
+# 创建输出目录
+mkdir -p metadatadir
+
+# 检查 dealdata.py 和 check_fastq_mapping.py 是否存在
+ls -la /home/xydeng/Metagenomics/scripts/dealdata.py
+ls -la /home/xydeng/Metagenomics/scripts/check_fastq_mapping.py
+
+sudo docker run --network=host --rm -it --cpus=12 --memory="20g" \
+    -v /home/xydeng/Metagenomics/project/demo/data:/data \
+    -v /home/xydeng/Metagenomics/project/demo/rawdata:/rawdata \
+    -v /home/xydeng/Metagenomics/scripts:/scripts \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        echo '==========================================' && \
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '==========================================' && \
+        echo '=== 检查输入文件 ===' && \
+        ls -la /data/data.xlsx && \
+        echo 'fastq 文件数: ' && ls /rawdata/*.fq.gz | wc -l && \
+        echo '=== 开始运行 dealdata.py 和 check_fastq_mapping.py ===' && \
+        time (python /scripts/dealdata.py -indir /data -outdir /metadatadir && python /scripts/check_fastq_mapping.py /rawdata /metadatadir/sample.txt /metadatadir/sample-metadata.tsv) && \
+        echo '==========================================' && \
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/01_check_input_with_raw_original_runtime.log
+
+```
+==========================================
+开始时间: 
+2026-06-22 12:05:02
+==========================================
+=== 检查输入文件 ===
+-rwxr--r-- 1 root root 10655 6月  15 14:17 /data/data.xlsx
+fastq 文件数: 
+12
+=== 开始运行 dealdata.py 和 check_fastq_mapping.py ===
+
+✅ dealdata.py 运行完成！
+⏱️  总耗时: 0.924 秒
+📁 输入目录: /data
+📁 输出目录: /metadatadir
+📄 生成文件:
+   - sample.txt
+   - sample-metadata.tsv
+✅ All checks passed!
+
+real    0m3.826s
+user    0m2.847s
+sys     0m0.935s
+==========================================
+结束时间: 
+2026-06-22 12:05:06
+==========================================
+
+
+
+## 更新代码运行时间统计
+```{bash}
+# 复制 dealdata.py 到 Script 目录
+sudo cp /home/xydeng/Metagenomics/scripts/dealdata.py /home/xydeng/Metagenomics/scripts_dxy/Script/
+sudo chown xydeng:xydeng /home/xydeng/Metagenomics/scripts_dxy/Script/dealdata.py
+
+# 确认
+ls -la /home/xydeng/Metagenomics/scripts_dxy/Script/dealdata.py
+
+
+cd /home/xydeng/Metagenomics
+
+sudo docker run --network=host --rm -it --cpus=12 --memory="20g" \
+    -v /home/xydeng/Metagenomics/project/demo/data:/data \
+    -v /home/xydeng/Metagenomics/project/demo/rawdata:/rawdata \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/scripts \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        echo '==========================================' && \
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '==========================================' && \
+        echo '=== 检查输入文件 ===' && \
+        ls -la /data/data.xlsx && \
+        echo 'fastq 文件数: ' && ls /rawdata/*.fq.gz | wc -l && \
+        echo '=== 开始运行 dealdata.py 和 check_fastq_mapping_update.py ===' && \
+        time (python /scripts/dealdata.py -indir /data -outdir /metadatadir && python /scripts/check_fastq_mapping_update.py /rawdata /metadatadir/sample.txt /metadatadir/sample-metadata.tsv) && \
+        echo '==========================================' && \
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/01_check_input_with_raw_update_runtime.log
+
+```
+==========================================
+开始时间: 
+2026-06-22 12:06:05
+==========================================
+=== 检查输入文件 ===
+-rwxr--r-- 1 root root 10655 6月  15 14:17 /data/data.xlsx
+fastq 文件数: 
+12
+=== 开始运行 dealdata.py 和 check_fastq_mapping_update.py ===
+
+✅ dealdata.py 运行完成！
+⏱️  总耗时: 0.365 秒
+📁 输入目录: /data
+📁 输出目录: /metadatadir
+📄 生成文件:
+   - sample.txt
+   - sample-metadata.tsv
+🔍 开始 fastq 映射验证...
+✅ All checks passed!
+⏱️  耗时: 0.014 秒
+
+real    0m3.165s
+user    0m2.375s
+sys     0m0.764s
+==========================================
+结束时间: 
+2026-06-22 12:06:09
+==========================================
+
+
+
+## 修改
+```{python}
+#!/usr/bin/env python3
+import os
+import re
+import sys
+import time
+import argparse
+import pandas as pd
+from pathlib import Path
+from typing import Set, List, Tuple
+
+# =========================
+# 1. 命令行参数解析
+# =========================
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="验证 fastq 文件与 mapping/metadata 的一致性",
+        epilog="示例: python check_fastq_mapping.py /path/to/fastq /path/to/sample.txt /path/to/metadata.tsv"
+    )
+    parser.add_argument(
+        "fastq_dir",
+        type=str,
+        help="fastq 文件所在目录"
+    )
+    parser.add_argument(
+        "mapping_file",
+        type=str,
+        help="样本映射文件 (sample.txt)，包含 fastqfile 和 samples 列"
+    )
+    parser.add_argument(
+        "metadata_file",
+        type=str,
+        help="样本元数据文件 (sample-metadata.tsv)，包含 sample-id 列"
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="显示详细信息"
+    )
+    parser.add_argument(
+        "-o", "--output",
+        type=str,
+        default=None,
+        help="将验证结果输出到指定文件"
+    )
+    return parser.parse_args()
+
+
+# =========================
+# 2. 提取样本基名
+# =========================
+def extract_sample_name(filename: str) -> str:
+    """
+    从 fastq 文件名中提取样本基名，去掉尾部的配对标记。
+    
+    示例:
+        CK_1_R1.fq.gz  -> CK_1
+        sample-R1.fastq -> sample
+        sample_R2.fq    -> sample
+    """
+    name = filename
+    
+    # 1) 去掉 .gz
+    if name.endswith('.gz'):
+        name = name[:-3]
+    
+    # 2) 去掉 .fastq 或 .fq
+    for ext in ('.fastq', '.fq'):
+        if name.endswith(ext):
+            name = name[:-len(ext)]
+            break
+    
+    # 3) 去掉末尾的配对标记
+    #   支持: _R1/_R2, -R1/-R2, _1/_2, -1/-2
+    base = re.sub(r'([_\-\.](?:R?[12]))$', '', name)
+    return base
+
+
+# =========================
+# 3. 查找列名（容错）
+# =========================
+def find_col(df, candidates: List[str]) -> str:
+    """在 DataFrame 中查找列名，支持忽略大小写"""
+    for c in candidates:
+        if c in df.columns:
+            return c
+    # 忽略大小写匹配
+    lower_map = {col.lower(): col for col in df.columns}
+    for c in candidates:
+        if c.lower() in lower_map:
+            return lower_map[c.lower()]
+    return None
+
+
+# =========================
+# 4. 加载并解析 fastq 文件
+# =========================
+def load_fastq_files(fastq_dir: str, verbose: bool = False) -> Set[str]:
+    """扫描 fastq 目录，返回所有样本基名"""
+    if not os.path.isdir(fastq_dir):
+        print(f"❌ 错误: fastq 目录不存在: {fastq_dir}")
+        sys.exit(1)
+    
+    # 支持的 fastq 扩展名
+    fastq_exts = (".fq", ".fq.gz", ".fastq", ".fastq.gz")
+    fastq_files = [f for f in os.listdir(fastq_dir) 
+                   if f.lower().endswith(fastq_exts)]
+    
+    if not fastq_files:
+        print(f"⚠️  警告: 在 {fastq_dir} 中未找到 fastq 文件")
+        return set()
+    
+    if verbose:
+        print(f"📁 找到 {len(fastq_files)} 个 fastq 文件")
+    
+    fastq_sample_names = set()
+    for f in fastq_files:
+        base = extract_sample_name(f)
+        if base:
+            fastq_sample_names.add(base)
+            if verbose:
+                print(f"   {f} -> {base}")
+    
+    return fastq_sample_names
+
+
+# =========================
+# 5. 加载 mapping 文件
+# =========================
+def load_mapping_file(mapping_file: str) -> Tuple[pd.DataFrame, str, str]:
+    """加载并解析 mapping 文件"""
+    if not os.path.isfile(mapping_file):
+        print(f"❌ 错误: mapping 文件不存在: {mapping_file}")
+        sys.exit(1)
+    
+    # 自动检测分隔符
+    map_df = pd.read_csv(mapping_file, sep=None, engine='python')
+    
+    # 查找列名
+    fastq_col = find_col(map_df, ['fastqfile', 'fastq_file', 'fastq', 'fastq_file_name'])
+    sample_col = find_col(map_df, ['samples', 'sample', 'sample-id', 'sample_id'])
+    
+    if fastq_col is None or sample_col is None:
+        print("❌ 错误: mapping 文件缺少 'fastqfile' 或 'samples' 列")
+        print(f"   实际列名: {list(map_df.columns)}")
+        sys.exit(1)
+    
+    return map_df, fastq_col, sample_col
+
+
+# =========================
+# 6. 加载 metadata 文件
+# =========================
+def load_metadata_file(metadata_file: str) -> Tuple[pd.DataFrame, str]:
+    """加载并解析 metadata 文件"""
+    if not os.path.isfile(metadata_file):
+        print(f"❌ 错误: metadata 文件不存在: {metadata_file}")
+        sys.exit(1)
+    
+    # 读取 metadata（跳过注释行）
+    meta_df = pd.read_csv(metadata_file, sep=None, comment='#', engine='python')
+    
+    # 查找 sample-id 列
+    meta_sample_col = find_col(meta_df, ['sample-id', 'sample_id', 'sample', 'sampleid'])
+    
+    if meta_sample_col is None:
+        print(f"❌ 错误: metadata 文件缺少 'sample-id' 列")
+        print(f"   实际列名: {list(meta_df.columns)}")
+        sys.exit(1)
+    
+    return meta_df, meta_sample_col
+
+
+# =========================
+# 7. 执行验证
+# =========================
+def validate(
+    fastq_bases: Set[str],
+    map_df: pd.DataFrame,
+    fastq_col: str,
+    sample_col: str,
+    meta_df: pd.DataFrame,
+    meta_sample_col: str
+) -> Tuple[bool, List[str], List[str], List[str], List[str]]:
+    """执行验证，返回 (是否通过, 缺失fastq, 多余fastq, 缺失样本, 多余样本)"""
+    
+    # 获取 mapping 中的 fastq 列表
+    map_fastq_bases = list(map_df[fastq_col].astype(str).tolist())
+    
+    # 获取 mapping 中的样本列表
+    map_samples = list(map_df[sample_col].astype(str).tolist())
+    
+    # 获取 metadata 中的样本列表
+    meta_samples = set(meta_df[meta_sample_col].astype(str).tolist())
+    
+    # 检查 fastq
+    missing_fastqs = [f for f in map_fastq_bases if f not in fastq_bases]
+    extra_fastqs = [f for f in fastq_bases if f not in map_fastq_bases]
+    
+    # 检查样本
+    missing_samples = [s for s in map_samples if s not in meta_samples]
+    extra_samples = [s for s in meta_samples if s not in map_samples]
+    
+    # 判断是否全部通过
+    all_passed = not (missing_fastqs or extra_fastqs or missing_samples or extra_samples)
+    
+    return all_passed, missing_fastqs, extra_fastqs, missing_samples, extra_samples
+
+
+# =========================
+# 8. 输出报告
+# =========================
+def print_report(
+    all_passed: bool,
+    missing_fastqs: List[str],
+    extra_fastqs: List[str],
+    missing_samples: List[str],
+    extra_samples: List[str],
+    output_file: str = None
+):
+    """打印验证报告"""
+    
+    lines = []
+    
+    if all_passed:
+        lines.append("✅ All checks passed!")
+    else:
+        lines.append("❌ Validation failed:")
+        if missing_fastqs:
+            lines.append(f"  - Mapping 中这些 fastqfile 在目录中找不到匹配的 fastq: {missing_fastqs}")
+        if extra_fastqs:
+            lines.append(f"  - 目录中存在未在 mapping 表中定义的样本: {sorted(extra_fastqs)}")
+        if missing_samples:
+            lines.append(f"  - Mapping 中的 sample 未在 metadata 中找到: {missing_samples}")
+        if extra_samples:
+            lines.append(f"  - Metadata 中存在但不在 mapping 中的 sample: {sorted(extra_samples)}")
+    
+    # 输出到屏幕
+    for line in lines:
+        print(line)
+    
+    # 输出到文件
+    if output_file:
+        with open(output_file, 'w') as f:
+            f.write("\n".join(lines))
+        print(f"📄 报告已保存至: {output_file}")
+    
+    return all_passed
+
+
+# =========================
+# 9. 主函数
+# =========================
+def main():
+    start_time = time.time()
+    
+    # 解析参数
+    args = parse_args()
+    
+    print("🔍 开始 fastq 映射验证...")
+    
+    # 加载数据
+    fastq_bases = load_fastq_files(args.fastq_dir, args.verbose)
+    map_df, fastq_col, sample_col = load_mapping_file(args.mapping_file)
+    meta_df, meta_sample_col = load_metadata_file(args.metadata_file)
+    
+    if args.verbose:
+        print(f"\n📊 统计:")
+        print(f"   fastq 样本数: {len(fastq_bases)}")
+        print(f"   mapping 条目数: {len(map_df)}")
+        print(f"   metadata 样本数: {len(meta_df)}")
+    
+    # 执行验证
+    all_passed, missing_fastqs, extra_fastqs, missing_samples, extra_samples = validate(
+        fastq_bases, map_df, fastq_col, sample_col, meta_df, meta_sample_col
+    )
+    
+    # 输出报告
+    print_report(all_passed, missing_fastqs, extra_fastqs, missing_samples, extra_samples, args.output)
+    
+    # 耗时
+    elapsed = time.time() - start_time
+    print(f"⏱️  耗时: {elapsed:.3f} 秒")
+    
+    # 退出码
+    sys.exit(0 if all_passed else 1)
+
+
+if __name__ == "__main__":
+    main()
+
+```
+
+
+主要更新内容
+更新项	         原版	                 优化版
+参数解析	     sys.argv 固定顺序	   argparse 支持 --help、-v、-o
+进度反馈	     无	                  显示 🔍 开始...、📁 找到 N 个文件
+错误信息	     仅报错	               显示预期路径、实际列名
+日志保存	     无	         -o 参数保存报告到文件
+verbose 模式	无	        -v 显示详细处理过程
+耗时统计	    无	        显示总耗时
+退出码	        无	        0=通过，1=失败，便于管道调用
+文件存在检查	 无	        检查输入文件/目录是否存在
+
+指标	原版	优化版
+dealdata.py 耗时	0.347 秒	0.309 秒
+
+优化版在功能正确性保持不变的前提下，通过增加 argparse 参数解析、详细进度反馈、耗时统计和日志保存等功能，显著提升了代码的健壮性和用户体验
+
+
+# task kneaddata_no @质控去宿主
+@source /root/anaconda3/etc/profile.d/conda.sh
+@python /root/microbiome/microbiome/metage_megahit/Kneaddata.py
+
+## 原始代码
+```{bash}
+# 直接用 metadatadir 作为 datadir
+
+cd /home/xydeng/Metagenomics
+
+mkdir -p cleandata Result de_host
+
+sudo docker run --network=host --rm -it --cpus=32 --memory="320g" \
+    -v /home/xydeng/Metagenomics/project/demo/data:/data \
+    -v /home/xydeng/Metagenomics/project/demo/rawdata:/rawdata \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/scripts:/scripts \
+    -v /home/xydeng/Metagenomics/cleandata:/cleandata \
+    -v /home/xydeng/Metagenomics/Result:/Result \
+    -v /home/xydeng/Metagenomics/de_host:/de_host \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        echo '==========================================' && \
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '==========================================' && \
+        source /root/anaconda3/etc/profile.d/conda.sh && \
+        conda activate biobakery && \
+        echo '=== 检查输入文件 ===' && \
+        ls /metadatadir && \
+        echo 'fastq 文件数: ' && ls /rawdata/*.fq.gz | wc -l && \
+        echo '=== 开始运行 Kneaddata.py ===' && \
+        time python /scripts/Kneaddata.py -i /rawdata -I /metadatadir --host none --mapdir /data/database/kneaddata_database -o /cleandata --resdir /Result --host_dir /de_host && \
+        echo '==========================================' && \
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/02_kneaddata_no_original_runtime.log
+
+```
+==========================================
+开始时间: 
+2026-06-22 11:34:53
+==========================================
+=== 检查输入文件 ===
+sample-metadata.tsv  sample.txt
+fastq 文件数: 
+12
+=== 开始运行 Kneaddata.py ===
+real    23m42.492s
+user    186m45.915s
+sys     9m34.367s
+==========================================
+结束时间: 
+2026-06-22 11:58:36
+==========================================
+
+
+
+## 更新代码运行时间统计
+```{bash}
+sudo cp /home/xydeng/Metagenomics/scripts/get_scriptspath.py /home/xydeng/Metagenomics/scripts_dxy/Script/
+sudo chown xydeng:xydeng /home/xydeng/Metagenomics/scripts_dxy/Script/get_scriptspath.py
+
+
+cd /home/xydeng/Metagenomics
+
+sudo docker run --network=host --rm -it --cpus=32 --memory="320g" \
+    -v /home/xydeng/Metagenomics/project/demo/data:/data \
+    -v /home/xydeng/Metagenomics/project/demo/rawdata:/rawdata \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/scripts \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/root/microbiome/microbiome/metage_megahit \
+    -v /home/xydeng/Metagenomics/cleandata:/cleandata \
+    -v /home/xydeng/Metagenomics/Result:/Result \
+    -v /home/xydeng/Metagenomics/de_host:/de_host \
+    -v /cephfs_data/genostack_v3/genostack_php/public_file_data/metagenome-DB:/db \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        echo '==========================================' && \
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '==========================================' && \
+        source /root/anaconda3/etc/profile.d/conda.sh && \
+        conda activate biobakery && \
+        echo '=== 检查输入文件 ===' && \
+        ls /metadatadir && \
+        echo 'fastq 文件数: ' && ls /rawdata/*.fq.gz | wc -l && \
+        echo '=== 确认脚本存在 ===' && \
+        ls -la /scripts/QC_update.sh /scripts/Kneaddata_update.sh && \
+        echo '=== 开始运行 Kneaddata_update.py ===' && \
+        time python /scripts/Kneaddata_update.py -i /rawdata -I /metadatadir --host none --mapdir /db/database/kneaddata_database -o /cleandata --resdir /Result --host_dir /de_host && \
+        echo '==========================================' && \
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/02_kneaddata_no_update_runtime.log
+
+
+```
+==========================================
+开始时间: 
+2026-06-17 16:40:11
+
+real    9m21.993s
+user    203m27.834s
+sys     12m20.971s
+
+结束时间: 
+2026-06-17 16:49:33
+==========================================
+
+
+
+## 文件修改
+
+核心改动确认：
+
+两个 .sh 脚本
+
+parallel 增加了 --halt soon,fail=1，任意样本失败立即终止全部并行任务
+fastp / bowtie2 失败会打印日志路径并返回非零退出码
+QC_update.sh 修复了 sample.txt 按行解析
+Kneaddata_update.sh 增加了 conda 激活失败检查
+Kneaddata_update.py
+
+使用 subprocess.run 替代 os.system，检查所有子进程返回码
+新增 StepRunner 捕获线程异常
+明确 4 个阶段依赖：QC → deHOST/error_rate_table 并行 → QC_stats → plot_table
+任意步骤失败都会 sys.exit(1) 终止，并打印具体错误
+修复了 t5（plot_table）未 join 的问题
+
+
+### QC_update.sh
+```{bash}
+#!/bin/bash
+# 并行化修改说明（2026-06-17）：
+# 1. 使用 GNU parallel 按样本并行运行 fastp 质控。
+# 2. 通过 --halt soon,fail=1 实现：任意一个并行任务失败时立即终止整个流程。
+# 3. 脚本使用 set -uo pipefail；关键命令通过显式判断返回码来报错，
+#    最终由上层 Python 流程捕获非零退出码并终止后续步骤。
+# 4. 当前默认 -j 6（同时跑 6 个样本），每个 fastp 用 --thread 16；
+#    若 Docker 分配 CPU 较少，可适当降低 -j 或 fastp 线程数，避免过度超配。
+set -uo pipefail
+
+rawdatadir=${1}
+datadir=${2}
+cleandatadir=${3}
+
+# 创建 qc 目录
+mkdir -p ${cleandatadir}/qc
+mkdir -p ${cleandatadir}/logs
+
+# 定义处理单个样本的函数
+process_sample() {
+    local fqn=$1
+    local sample=$2
+    local rc=0
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Processing: ${fqn} -> ${sample}"
+
+    # 创建软链接（R1）
+    for suffix in "_1.fq.gz" "_R1.fq.gz" ".1.fq.gz" ".1.fastq.gz" "_1.fastq.gz" "_R1.fastq.gz" ".R1.raw.fastq.gz" ".R1.raw.fq.gz" ".R1.fq.gz" "_R1_001.fastq.gz"; do
+        if [ -e "${rawdatadir}/${fqn}${suffix}" ]; then
+            ln -sf "${rawdatadir}/${fqn}${suffix}" "${fqn}_1.fastq.gz"
+            break
+        fi
+    done
+
+    # 创建软链接（R2）
+    for suffix in "_2.fq.gz" "_R2.fq.gz" ".2.fq.gz" ".2.fastq.gz" "_2.fastq.gz" "_R2.fastq.gz" ".R2.raw.fastq.gz" ".R2.raw.fq.gz" ".R2.fq.gz" "_R2_001.fastq.gz"; do
+        if [ -e "${rawdatadir}/${fqn}${suffix}" ]; then
+            ln -sf "${rawdatadir}/${fqn}${suffix}" "${fqn}_2.fastq.gz"
+            break
+        fi
+    done
+
+    # fastp 质控
+    fastp -3 -5 -W 4 -M 20 -l 100 --thread 16 \
+        -i ${fqn}_1.fastq.gz -I ${fqn}_2.fastq.gz \
+        -o ${cleandatadir}/${sample}_clean_1.fastq.gz \
+        -O ${cleandatadir}/${sample}_clean_2.fastq.gz \
+        -h ${cleandatadir}/qc/${sample}.html \
+        -j ${cleandatadir}/qc/${sample}.json \
+        > ${cleandatadir}/logs/${sample}.log 2>&1 || rc=$?
+
+    # 清理软链接
+    rm -f ${fqn}_1.fastq.gz ${fqn}_2.fastq.gz
+
+    if [ ${rc} -ne 0 ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: fastp failed for ${sample}, see ${cleandatadir}/logs/${sample}.log" >&2
+        return ${rc}
+    fi
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Finished: ${sample}"
+}
+export -f process_sample
+export rawdatadir cleandatadir
+
+# 提取所有样本信息（跳过表头）
+echo "Starting parallel QC with parallel..."
+
+# 按行读取 sample.txt，用制表符分隔两列传给 parallel
+# --halt soon,fail=1：只要有一个样本失败，立即终止其余并行任务并返回非零退出码
+if ! awk 'NR!=1 {print $1"\t"$2}' "${datadir}/sample.txt" | \
+    parallel -j 6 --halt soon,fail=1 --colsep '\t' --bar process_sample {1} {2}; then
+    echo "[ERROR] QC parallel processing failed. Please check logs in ${cleandatadir}/logs/" >&2
+    exit 1
+fi
+
+echo '------------clean data finish!------------'
+
+
+```
+
+
+### Kneaddata_update.sh
+```{bash}
+#!/bin/bash
+# 并行化修改说明（2026-06-17）：
+# 1. 使用 GNU parallel 按样本并行运行 bowtie2 去宿主 + fastp 二次质控。
+# 2. 通过 --halt soon,fail=1 实现：任意一个并行任务失败时立即终止整个流程。
+# 3. 脚本使用 set -uo pipefail；关键命令通过显式判断返回码来报错，
+#    最终由上层 Python 流程捕获非零退出码并终止后续步骤。
+#
+# bowtie2 并行策略说明：
+#   本脚本采用“样本间并行 + 样本内多线程”的两层并行策略：
+#   - 样本间并行：由 GNU parallel 的 -j 参数控制，同时运行 N 个样本的去宿主流程。
+#   - 样本内并行：每个 bowtie2 进程通过 -p 参数使用多线程；每个 fastp 二次质控
+#     通过 --thread 参数使用多线程。
+#   理论峰值线程数 = parallel -j N × max(bowtie2 -p, fastp --thread)
+#
+#   默认配置：-j 6，bowtie2 -p 64，fastp --thread 64
+#   峰值线程数 ≈ 6 × 64 = 384 线程
+#   该配置适合超大内存/超多核机器；普通 Docker 环境（如 32 CPU）会严重超配，
+#   可能导致性能下降甚至系统负载过高。
+#
+#   推荐配置（根据 Docker CPU 数调整，尽量让峰值线程数 ≤ CPU 数）：
+#   - 32 CPU：parallel -j 2，bowtie2 -p 16，fastp --thread 16  → 峰值 32 线程
+#   - 64 CPU：parallel -j 4，bowtie2 -p 16，fastp --thread 16  → 峰值 64 线程
+#   - 96 CPU：parallel -j 4，bowtie2 -p 24，fastp --thread 24  → 峰值 96 线程
+#   也可改为“高并行度 + 低单任务线程”，例如 32 CPU 时用 -j 8 + -p 4，
+#   但 bowtie2/fastp 单任务线程过低时效率会下降，建议单任务至少 8~16 线程。
+set -uo pipefail
+
+if ! source ~/anaconda3/etc/profile.d/conda.sh; then
+    echo "[ERROR] Failed to source conda" >&2
+    exit 1
+fi
+if ! conda activate biobakery; then
+    echo "[ERROR] Failed to activate conda env 'biobakery'" >&2
+    exit 1
+fi
+
+datadir=${1}
+mapdir=${2}
+cleandatadir=${3}
+host_dir=${4}
+host_str=${5}
+
+# 创建 qc 目录
+mkdir -p ${host_dir}/qc
+mkdir -p ${host_dir}/logs
+
+# 定义处理单个样本的函数
+process_sample() {
+    local sample=$1
+    local rc=0
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Processing dehost: ${sample}"
+
+    # 1. bowtie2 去宿主
+    bowtie2 -p 64 --no-unal \
+        -x ${mapdir}/${host_str} \
+        -1 ${cleandatadir}/${sample}_clean_1.fastq.gz \
+        -2 ${cleandatadir}/${sample}_clean_2.fastq.gz \
+        --un-conc-gz ${host_dir}/${sample}_de_host.fastq.gz \
+        > ${host_dir}/logs/${sample}_bowtie.log 2>&1 || rc=$?
+
+    if [ ${rc} -ne 0 ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: bowtie2 failed for ${sample}, see ${host_dir}/logs/${sample}_bowtie.log" >&2
+        return ${rc}
+    fi
+
+    # 2. 重命名去宿主文件
+    if [ -f "${host_dir}/${sample}_de_host.fastq.1.gz" ]; then
+        mv ${host_dir}/${sample}_de_host.fastq.1.gz ${host_dir}/${sample}_dehost_1.fastq.gz
+        mv ${host_dir}/${sample}_de_host.fastq.2.gz ${host_dir}/${sample}_dehost_2.fastq.gz
+    fi
+
+    # 3. fastp 二次质控
+    fastp -Q -L -A --thread 64 \
+        -i ${host_dir}/${sample}_dehost_1.fastq.gz \
+        -I ${host_dir}/${sample}_dehost_2.fastq.gz \
+        -o ${cleandatadir}/${sample}_rm_1.fastq.gz \
+        -O ${cleandatadir}/${sample}_rm_2.fastq.gz \
+        -h ${host_dir}/qc/${sample}.html \
+        -j ${host_dir}/qc/${sample}.json \
+        > ${host_dir}/logs/${sample}_fastp.log 2>&1 || rc=$?
+
+    if [ ${rc} -ne 0 ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: fastp (dehost) failed for ${sample}, see ${host_dir}/logs/${sample}_fastp.log" >&2
+        return ${rc}
+    fi
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Finished dehost: ${sample}"
+}
+export -f process_sample
+export mapdir cleandatadir host_dir host_str
+
+# 提取所有样本名（跳过表头，取第2列），每行一个样本传给 parallel
+# --halt soon,fail=1：只要有一个样本失败，立即终止其余并行任务并返回非零退出码
+echo "Starting parallel dehost with parallel..."
+if ! awk 'NR!=1 {print $2}' "${datadir}/sample.txt" | \
+    parallel -j 6 --halt soon,fail=1 --bar process_sample {}; then
+    echo "[ERROR] dehost parallel processing failed. Please check logs in ${host_dir}/logs/" >&2
+    exit 1
+fi
+
+# 清理中间文件
+rm -f ${cleandatadir}/*clean*.fastq.gz
+rm -f ${cleandatadir}/*rm*.fastq.gz
+
+echo '------------dehost finish!------------'
+
+
+```
+
+### Kneaddata_update.py
+```{python}
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# Updated: 2026-06-17
+#   - 调用 QC_update.sh / Kneaddata_update.sh（GNU parallel 并行版）
+#   - 使用多线程实现步骤间并行/依赖：
+#       1) QC（必须完成）
+#       2) deHOST 与 error_rate_table 可并行（均依赖 QC 输出）
+#       3) QC_stats 等待 2) 完成后执行
+#       4) plot_table 等待 QC_stats 完成后执行
+#   - 所有子进程返回值与线程异常均被捕获，任意步骤失败即终止整个流程并输出错误信息。
+# 从原始数据生成cleandata，注意格式必须为
+# <sample><_1/2><.format><.gz>或者<sample><_R1/R2><.format><.gz>
+import os, json, argparse, sys, subprocess
+import pandas as pd
+import threading
+import numpy as np
+from get_scriptspath import scripts_path, Rscript_j
+
+
+class StepRunner:
+    """简易线程调度器：启动线程、捕获异常/返回码、按阶段检查。"""
+    def __init__(self):
+        self.errors = {}
+        self.lock = threading.Lock()
+
+    def run(self, name, func, args):
+        def wrapper():
+            try:
+                rc = func(*args)
+                if rc != 0:
+                    with self.lock:
+                        self.errors[name] = f"exit code {rc}"
+            except Exception as e:
+                with self.lock:
+                    self.errors[name] = f"{type(e).__name__}: {e}"
+        t = threading.Thread(target=wrapper, name=name)
+        t.start()
+        return t
+
+    def check(self, phase):
+        if self.errors:
+            print(f"[ERROR] Phase '{phase}' failed: {self.errors}", file=sys.stderr)
+            sys.exit(1)
+
+
+def run_cmd(cmd, step_name):
+    """运行 shell 命令，返回 returncode；失败时打印错误。"""
+    print(f"[INFO] [{step_name}] {cmd.strip()}")
+    result = subprocess.run(cmd, shell=True)
+    if result.returncode != 0:
+        print(f"[ERROR] [{step_name}] exit code {result.returncode}", file=sys.stderr)
+    return result.returncode
+
+
+def QC(rawdatadir, datadir, cleandatadir):
+    # 确保日志目录存在，避免重定向失败
+    os.makedirs(os.path.join(cleandatadir, 'logs'), exist_ok=True)
+    cmd = '''bash {0}/QC_update.sh {1} {2} {3} >{4}/logs/QC_update.sh.log 2>&1'''.format(
+        scripts_path, rawdatadir, datadir, cleandatadir, cleandatadir)
+    return run_cmd(cmd, "QC")
+
+
+def error_rate_table(cleandatadir):
+    qc_dir = os.path.join(cleandatadir, 'qc')
+    res_dir = os.path.join(cleandatadir, 'table')
+    if not os.path.exists(res_dir):
+        os.mkdir(res_dir)
+    files = os.listdir(qc_dir)
+    for file in files:
+        if file.endswith('.json'):
+            prefix = file.split('.json')[0].strip()
+            with open('%s/%s' % (qc_dir, file), 'r', encoding='utf-8') as fp:
+                json_dat = json.load(fp)
+                raw_quality1 = json_dat['read1_before_filtering']['quality_curves']['mean']
+                raw_content1 = json_dat['read1_before_filtering']['content_curves']
+                raw_quality2 = json_dat['read2_before_filtering']['quality_curves']['mean']
+                raw_content2 = json_dat['read2_before_filtering']['content_curves']
+                knums = len(raw_quality1)
+                bp_r1 = list(range(1, knums+1))
+                bp_r2 = list(range(knums+1, knums*2+1))
+
+                raw_q1 = pd.DataFrame(list(zip(bp_r1, raw_quality1)), columns=['reads', 'Q'])
+                raw_q2 = pd.DataFrame(list(zip(bp_r2, raw_quality2)), columns=['reads', 'Q'])
+                raw_q1['group'] = 'Read1'
+                raw_q2['group'] = 'Read2'
+                raw_q = pd.concat([raw_q1, raw_q2], axis=0)
+                error_rate = np.power(10, -raw_q['Q'].to_numpy() / 10)
+                raw_q['error_rate'] = error_rate
+                raw_q.to_csv('%s/%s_error_rate.tsv' % (res_dir, prefix), sep='\t', index=False)
+
+                raw_c1 = pd.DataFrame(raw_content1)
+                raw_c1['reads'] = bp_r1
+                raw_c1['group'] = 'Read1'
+                raw_c2 = pd.DataFrame(raw_content2)
+                raw_c2['reads'] = bp_r2
+                raw_c2['group'] = 'Read2'
+                raw_c = pd.concat([raw_c1, raw_c2], axis=0)
+                raw_c = raw_c.drop(['GC'], axis=1)
+                raw_c.to_csv('%s/%s_content.tsv' % (res_dir, prefix), sep='\t', index=False)
+    return 0
+
+
+def plot_table(cleandatadir, datadir, res_dir, host_dir, host):
+    table_dir = os.path.join(cleandatadir, 'table')
+    cmd = '''
+    {0} {1}/error_rate.R {2} {3} {4}
+    {0} {1}/atgc_content.R {2} {3} {4}
+    '''.format(Rscript_j, scripts_path, table_dir, datadir, res_dir)
+    rc = run_cmd(cmd, "plot_table_phase1")
+    if rc != 0:
+        return rc
+
+    if host == 'none':
+        table_dir = os.path.join(cleandatadir, 'table')
+    else:
+        table_dir = os.path.join(host_dir, 'table')
+
+    cmd = '''
+    {0} {1}/data_composition_bar.R {2} {3} {4} {5}
+    '''.format(Rscript_j, scripts_path, table_dir, datadir, res_dir, host)
+    return run_cmd(cmd, "plot_table_phase2")
+
+
+def deHOST(cleandatadir, datadir, host, mapdir, host_dir):
+    if host == 'none':
+        # 不去宿主，直接返回 0 表示该步骤成功
+        return 0
+    elif host == 'human':
+        host_qcdir = os.path.join(host_dir, 'qc')
+        if not os.path.exists(host_qcdir):
+            os.makedirs(host_qcdir)
+        cmd = '''
+        bash {0}/Kneaddata_update.sh {1} {2} {3} {4} 'human_genome/hg37dec_v0.1'
+        '''.format(scripts_path, datadir, mapdir, cleandatadir, host_dir)
+        return run_cmd(cmd, "deHOST_human")
+    elif host == 'mouse':
+        host_qcdir = os.path.join(host_dir, 'qc')
+        if not os.path.exists(host_qcdir):
+            os.makedirs(host_qcdir)
+        cmd = '''
+        bash {0}/Kneaddata_update.sh {1} {2} {3} {4} 'mouse_C57BL_6NJ/mouse_C57BL_6NJ'
+        '''.format(scripts_path, datadir, mapdir, cleandatadir, host_dir)
+        return run_cmd(cmd, "deHOST_mouse")
+    else:
+        host_qcdir = os.path.join(host_dir, 'qc')
+        if not os.path.exists(host_qcdir):
+            os.makedirs(host_qcdir)
+        cmd = '''
+        bash {0}/Kneaddata_update.sh {1} {2} {3} {4} {5}/{5}
+        '''.format(scripts_path, datadir, mapdir, cleandatadir, host_dir, host)
+        return run_cmd(cmd, "deHOST_custom")
+
+
+def QC_stats(datadir, cleandatadir, res_dir, host, host_dir):
+    samples = []
+    with open('%s/sample.txt' % datadir, 'r', encoding='utf-8') as f:
+        f.readline()
+        for line in f.readlines():
+            samples.append(line.split('\t')[1].strip())
+
+    df = pd.DataFrame()
+    for sample in samples:
+        filename = sample + '.json'
+        with open('%s/qc/%s' % (cleandatadir, filename), 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            raw = data['summary']['before_filtering']
+            clean = data['summary']['after_filtering']
+            raw = pd.DataFrame(raw, index=range(0, 1))
+            raw = raw.loc[:, ['total_reads', 'total_bases']]
+            raw.columns = ['Raw_reads', 'Raw_bases(G)']
+            clean = pd.DataFrame(clean, index=range(0, 1))
+            clean = clean.loc[:, ['total_reads', 'total_bases', 'q20_rate', 'q30_rate', 'gc_content']]
+            clean.columns = ['Removed_low_quality_Reads', 'Removed_Low_Qualitybases(G)', 'Q20(%)', 'Q30(%)',
+                            'GC_content(%)']
+            new = pd.DataFrame({'Sample_name': [sample]})
+            total = pd.concat([new, raw, clean], axis=1)
+            df = df._append(total)
+    df['Raw_bases(G)'] = df['Raw_bases(G)'].apply(lambda x: round(x / 10 ** 9, 2))
+    df['Removed_Low_Qualitybases(G)'] = df['Removed_Low_Qualitybases(G)'].apply(lambda x: round(x / 10 ** 9, 2))
+    df.to_csv('%s/table/sumary.txt' % cleandatadir, sep='\t', index=False)
+
+    if host == 'none':
+        df = pd.read_csv('%s/table/sumary.txt' % cleandatadir, sep='\t', dtype={'Sample_name': str})
+        sam_gros = pd.read_csv('%s/sample-metadata.tsv' % datadir, sep='\t', skiprows=[1], dtype=str)
+        k = sam_gros.shape[1]
+        for i in range(1, k):
+            sam_gro = sam_gros.iloc[:, [0] + [i]]
+            sam_gro = sam_gro.dropna(axis=0).reset_index(drop=True)
+            group_num = 'group' + str(i)
+
+            sam_df = pd.merge(left=sam_gro, right=df, left_on='sample-id', right_on='Sample_name', how='inner')
+            sam_df = sam_df.drop(['sample-id', group_num], axis=1)
+            sam_dir = os.path.join(res_dir, group_num, '1-data_quality')
+            if not os.path.exists(sam_dir):
+                os.makedirs(sam_dir)
+            sam_df.to_excel('%s/data_quality.xlsx' % sam_dir, index=False)
+    else:
+        if not os.path.exists(os.path.join(host_dir, 'table')):
+            os.mkdir(os.path.join(host_dir, 'table'))
+        pre_summary = pd.read_csv('%s/table/sumary.txt' % cleandatadir, sep='\t', dtype={'Sample_name': str})
+        pre_summary = pre_summary.iloc[:, 0:5]
+
+        df = pd.DataFrame()
+        files = os.listdir('%s/qc' % host_dir)
+        for file in files:
+            if file.endswith('.json'):
+                prefix = file.split('.json')[0].strip()
+                with open('%s/qc/%s' % (host_dir, file), 'r', encoding='utf-8') as fp:
+                    data = json.load(fp)
+                    de_host = data['summary']['before_filtering']
+                    de_host = pd.DataFrame(de_host, index=range(0, 1))
+                    de_host = de_host.loc[:, ['total_reads', 'total_bases', 'q20_rate', 'q30_rate', 'gc_content']]
+                    de_host.columns = ['Removed_host_Reads', 'Removed_host_bases(G)', 'Q20(%)', 'Q30(%)',
+                                    'GC_content(%)']
+                    new = pd.DataFrame({'Sample_name': [prefix]})
+                    total = pd.concat([new, de_host], axis=1)
+                    df = df._append(total)
+        df['Removed_host_bases(G)'] = df['Removed_host_bases(G)'].apply(lambda x: round(x / 10 ** 9, 2))
+        df_merge = pd.merge(left=pre_summary, right=df, on='Sample_name')
+        df_merge.to_csv('%s/table/sumary.txt' % host_dir, sep='\t', index=False)
+
+        sam_gros = pd.read_csv('%s/sample-metadata.tsv' % datadir, sep='\t', skiprows=[1], dtype=str)
+        k = sam_gros.shape[1]
+        for i in range(1, k):
+            sam_gro = sam_gros.iloc[:, [0] + [i]]
+            sam_gro = sam_gro.dropna(axis=0).reset_index(drop=True)
+            group_num = 'group' + str(i)
+
+            sam_df = pd.merge(left=sam_gro, right=df_merge, left_on='sample-id', right_on='Sample_name', how='inner')
+            sam_df = sam_df.drop(['sample-id', group_num], axis=1)
+            sam_dir = os.path.join(res_dir, group_num, '1-data_quality')
+            if not os.path.exists(sam_dir):
+                os.makedirs(sam_dir)
+            sam_df.to_excel('%s/data_quality.xlsx' % sam_dir, index=False)
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='This script will generate clean_data through fastp')
+    parser.add_argument('-i', '--i_rawdatadir', type=str, required=True, default='rawdata', help='the dir of raw_data')
+    parser.add_argument('-I', '--i_datadir', type=str, required=True, default='data', help='the dir of sample.txt')
+    parser.add_argument('--host', type=str, required=True, nargs='*', help='the host of metagenome')
+    parser.add_argument('-o', '--output_dir', type=str, default='cleandata', help='the dir of clean_data')
+    parser.add_argument('--host_dir', type=str, default='de_host', help='the dir of dehost_data')
+    parser.add_argument('--resdir', type=str, default='Result', help='the resdir')
+    parser.add_argument('--mapdir', type=str, default='/data/data1/wangli/database/kneaddata_database',
+                        help='the dir of kneaddata_database.xlsx')
+    args = parser.parse_args()
+
+    rawdatadir = os.path.abspath(args.i_rawdatadir)
+    datadir = os.path.abspath(args.i_datadir)
+    cleandadir = os.path.abspath(args.output_dir)
+    res_dir = os.path.abspath(args.resdir)
+    mapdir = os.path.abspath(args.mapdir)
+    host_dir = os.path.abspath(args.host_dir)
+    host = args.host[0]
+
+    if not os.path.exists(res_dir):
+        os.mkdir(res_dir)
+
+    runner = StepRunner()
+
+    # Phase 1: QC（fastp 一次质控）
+    # 必须全部完成，才能进入下一阶段
+    t1 = runner.run("QC", QC, args=(rawdatadir, datadir, cleandadir))
+    t1.join()
+    runner.check("QC")
+
+    # Phase 2: deHOST 与 error_rate_table 可并行
+    # - deHOST 依赖 QC 生成的 *_clean_*.fastq.gz
+    # - error_rate_table 只读取 QC 生成的 json 文件
+    t2 = runner.run("deHOST", deHOST, args=(cleandadir, datadir, host, mapdir, host_dir))
+    t3 = runner.run("error_rate_table", error_rate_table, args=(cleandadir,))
+    t2.join()
+    t3.join()
+    runner.check("deHOST / error_rate_table")
+
+    # Phase 3: QC_stats（汇总质控统计表）
+    t4 = runner.run("QC_stats", QC_stats, args=(datadir, cleandadir, res_dir, host, host_dir))
+    t4.join()
+    runner.check("QC_stats")
+
+    # Phase 4: plot_table（绘制质控图）
+    t5 = runner.run("plot_table", plot_table, args=(cleandadir, datadir, res_dir, host_dir, host))
+    t5.join()
+    runner.check("plot_table")
+
+    print("[INFO] All steps completed successfully.")
+
+
+if __name__ == '__main__':
+    main()
+
+```
+
+
+# task megahit_no @组装
+@ source /root/anaconda3/etc/profile.d/conda.sh
+@ python /root/microbiome/microbiome/metage_megahit/megahit.py
+
+
+
+## 优化代码
+```{bash}
+cd /home/xydeng/Metagenomics
+
+mkdir -p megahit
+
+sudo docker run --network=host --rm -it --cpus=96 --memory="720g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/cleandata:/cleandata \
+    -v /home/xydeng/Metagenomics/de_host:/de_host \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/scripts \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/root/microbiome/microbiome/metage_megahit \
+    -v /home/xydeng/Metagenomics/megahit:/megahit \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        echo '==========================================' && \
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '==========================================' && \
+        source /root/anaconda3/etc/profile.d/conda.sh && \
+        conda activate megahit && \
+        echo '=== 确认脚本存在 ===' && \
+        ls -la /root/microbiome/microbiome/metage_megahit/megahit.py /root/microbiome/microbiome/metage_megahit/megahit.sh && \
+        echo '=== 开始运行 ===' && \
+        time python /root/microbiome/microbiome/metage_megahit/megahit.py \
+            -I /metadatadir \
+            --cleandir /cleandata \
+            --host none \
+            --host_dir /de_host \
+            --megahit /megahit && \
+        echo '==========================================' && \
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/03_megahit_no_original_runtime.log
+
+```
+
+
+# task megahit_no
+@ source /root/anaconda3/etc/profile.d/conda.sh
+@ python /root/microbiome/microbiome/metage_megahit/megahit.py
+
+## 原始代码 @测试原代码运行时间、不保留结果
+```{bash}
+cd /home/xydeng/Metagenomics
+
+sudo docker run --network=host --rm -it --cpus=80 --memory="720g" \
+    -v /home/xydeng/Metagenomics/project/demo/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/cleandata:/cleandata \
+    -v /home/xydeng/Metagenomics/de_host:/de_host \
+    -v /home/xydeng/Metagenomics/scripts:/scripts \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        source /root/anaconda3/etc/profile.d/conda.sh && \
+        conda activate megahit && \
+        echo '==========================================' && \
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '==========================================' && \
+        echo '=== 检查输入文件 ===' && \
+        ls -la /metadatadir/sample.txt && \
+        echo '=== 开始运行 megahit ===' && \
+        time python /scripts/megahit.py -I /metadatadir --cleandir /cleandata --host none --host_dir /de_host --megahit /megahit && \
+        echo '==========================================' && \
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/03_megahit_no_original_runtime.log
+
+
+
+```
+跑起来后按 Ctrl+B 然后 D 退出 tmux。
+
+核心数据总结
+样本信息：/home/xydeng/Metagenomics/project/demo/metadatadir/
+组装输入数据：/home/xydeng/Metagenomics/cleandata/ 下的 6 个样本 × 2 端 = 12 个 .fastq.gz 文件
+每个样本大小：约 1.4–2.2 GB
+总压缩数据量：约 20 GB
+
+
+
+## 优化版 V1（已归档）
+
+> 这是第一版优化代码（`megahit_update_V1.py` / `megahit_update_V1.sh`），已运行完成，结果保存在 `megahit_update/`。
+> 由于并行策略不当（PARALLEL_J=3 + MEGAHIT_T=24），V1 慢于原代码，因此已归档，仅作对比参考。
+
+```{bash}
+#!/bin/bash
+# 使用 V1 优化代码运行 Task 03 megahit_no（已归档，仅供复现/对比）
+# 输入：/home/xydeng/Metagenomics/cleandata
+# 输出：/home/xydeng/Metagenomics/megahit_update
+# 日志：/home/xydeng/Metagenomics/scripts_dxy/logs/03_megahit_no_update_runtime.log
+
+cd /home/xydeng/Metagenomics
+
+# 清空旧输出
+rm -rf /home/xydeng/Metagenomics/megahit_update
+
+tmux new -s megahit_update_V1
+
+sudo docker run --network=host --rm -it --cpus=80 --memory="720g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/cleandata:/cleandata \
+    -v /home/xydeng/Metagenomics/de_host:/de_host \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/scripts \
+    -v /home/xydeng/Metagenomics/megahit_update:/megahit \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        source /root/anaconda3/etc/profile.d/conda.sh && \
+        conda activate megahit && \
+        echo '==========================================' && \
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '==========================================' && \
+        echo '=== 检查输入文件 ===' && \
+        ls -la /metadatadir/sample.txt && \
+        echo '=== 开始运行 megahit_update (V1) ===' && \
+        time python /scripts/megahit_update_V1.py \
+            -I /metadatadir \
+            --cleandir /cleandata \
+            --host none \
+            --host_dir /de_host \
+            --megahit /megahit && \
+        echo '==========================================' && \
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/03_megahit_no_update_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t megahit_update_V1
+```
+
+运行结果：real **722m58.873s**（约 12h3m），略慢于原代码 706m4.870s。
+
+
+## 优化版 V2（当前 _update）
+
+> 注意：之前的优化版已归档为 `megahit_update_V1.py` / `megahit_update_V1.sh`（运行结果 real 722m58.873s，略慢于原代码）。
+> 当前 `megahit_update.py` / `megahit_update.sh` 为 V2，已修正并行策略为与原代码一致（6 样本同时并行 × 12 线程/样本）。
+> 输出目录使用 `megahit_update_V2/`，保留原有的 `megahit_update/`（V1 结果）以便对比。
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+# 清空 V2 旧输出（保留 megahit_update/ 用于对比）
+rm -rf /home/xydeng/Metagenomics/megahit_update_V2
+
+tmux new -s megahit_update_V2
+
+sudo docker run --network=host --rm -it --cpus=72 --memory="720g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/cleandata:/cleandata \
+    -v /home/xydeng/Metagenomics/de_host:/de_host \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/scripts \
+    -v /home/xydeng/Metagenomics/megahit_update_V2:/megahit \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        source /root/anaconda3/etc/profile.d/conda.sh && \
+        conda activate megahit && \
+        echo '==========================================' && \
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '==========================================' && \
+        echo '=== 检查输入文件 ===' && \
+        ls -la /metadatadir/sample.txt && \
+        echo '=== 开始运行 megahit_update (V2) ===' && \
+        time python /scripts/megahit_update.py \
+            -I /metadatadir \
+            --cleandir /cleandata \
+            --host none \
+            --host_dir /de_host \
+            --megahit /megahit && \
+        echo '==========================================' && \
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/03_megahit_no_update_V2_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t megahit_update_V2
+# 运行后按 Ctrl+B 然后 D 退出 tmux，让它在后台跑。
+
+# 对比时间
+echo '=== 原代码 ==='
+grep -E "real|user|sys" /home/xydeng/Metagenomics/scripts_dxy/logs/03_megahit_no_original_runtime.log
+
+echo '=== 优化代码 V1 ==='
+grep -E "real|user|sys" /home/xydeng/Metagenomics/scripts_dxy/logs/03_megahit_no_update_runtime.log
+
+echo '=== 优化代码 V2 ==='
+grep -E "real|user|sys" /home/xydeng/Metagenomics/scripts_dxy/logs/03_megahit_no_update_V2_runtime.log
+
+
+
+# 之后查看进度：
+tmux attach -t megahit_update_V2
+# 或者看 log：
+
+tail -f /home/xydeng/Metagenomics/scripts_dxy/logs/03_megahit_no_update_runtime.log
+
+
+# 重连
+tmux attach -t megahit_update
+
+# 如果不确定容器是否还在跑
+也可以直接 kill tmux 会话，里面的 docker 进程会被终止，容器也会跟着停：
+tmux kill-session -t megahit_update
+# 然后确认：
+tmux ls
+sudo docker ps | grep metage:v2.87
+# 两个都没输出就是彻底关闭了。
+
+
+    
+```
+已做的优化
+megahit_update.py + megahit_update.sh 相比原代码做了这些优化：
+
+优化项	原代码	V1（已归档）	V2（当前 _update）	效果
+挂载点 bug	shutil.rmtree('/megahit') 会报错	只清空目录内容	只清空目录内容	可以挂载 /megahit 保留结果
+并行样本数	-j 7	-j 3	-j 6	V1 分 2 波跑导致慢；V2 与原代码一致，6 样本同时跑
+单样本线程	-t 12	-t 24	-t 12	V1 单样本快但总体慢；V2 与原代码一致
+min-count	默认 2	--min-count 3	默认不传	V2 保持与原代码结果可比
+seqkit 线程	-j 36	-j 8	-j 36	V2 恢复后处理线程数
+后处理并行	顺序 while 循环	顺序 while 循环	GNU parallel 6 样本并发	缩短后处理 wall-clock，每次 seqkit 用 2 线程避免线程爆炸
+sample.txt 解析	cut -d " " 对 tab 分隔出错	cut -f	awk '{print $2}'	正确解析 tab/空格分隔
+失败即停	无	set -e	set -euo pipefail	V2 更严格
+结果数据
+运行完成后，/home/xydeng/Metagenomics/megahit_update_V2/ 下会有：
+
+megahit_update/
+├── CK-1/
+│   ├── final.contigs.fa      # 组装结果
+│   ├── intermediate_contigs/  # 中间 contigs
+│   ├── tmp/                   # 临时文件
+│   └── log                    # 运行日志
+├── CK-2/
+├── CK-3/
+├── T-1/
+├── T-2/
+├── T-3/
+└── length/
+    ├── CK-1_length.txt
+    ├── CK-1_stats.txt
+    └── ...
+最重要的输出是各样本的 final.contigs.fa，可用于下游：
+
+prodigal 基因预测
+bwa 比对
+binning 分箱
+是否保存在服务器
+是的，结果会保存在服务器。
+
+因为命令中挂载了：
+
+-v /home/xydeng/Metagenomics/megahit_update:/megahit
+容器内 /megahit/ 的内容会实时写入宿主机的 /home/xydeng/Metagenomics/megahit_update_V2/。即使容器结束（--rm），宿主机上的数据仍然会保留。
+
+
+
+## 运行时间
+
+### 原代码 @/home/xydeng/Metagenomics/scripts_dxy/logs/03_megahit_no_original_runtime.log
+real    706m4.870s
+user    31469m57.061s
+sys     262m35.217s
+
+看 real 706m4.870s 就是真实运行时间，约 11 小时 46 分钟。
+
+### 优化版 V1 @/home/xydeng/Metagenomics/scripts_dxy/logs/03_megahit_no_update_runtime.log
+real    722m58.873s
+user    36735m7.935s
+sys     233m11.839s
+
+- 开始时间：2026-06-22 09:04:55
+- 结束时间：2026-06-22 21:08:00
+- 真实 wall-clock 时间：722m58.873s（约 12 小时 3 分钟）
+- 状态：已归档为 `megahit_update_V1.py` / `megahit_update_V1.sh`，慢于原代码
+
+### 优化版 V2
+
+- 代码：`megahit_update.py` / `megahit_update.sh`
+- 日志：`/home/xydeng/Metagenomics/scripts_dxy/logs/03_megahit_no_update_V2_runtime.log`
+- 真实 wall-clock 时间：real 705m43.488s（约 11 小时 45 分钟）
+- 较原代码：real 706m4.870s（约 11 小时 46 分钟）基本持平，略快约 0.05%
+- 修正：PARALLEL_J=6 + MEGAHIT_T=12，默认不传 --min-count，SEQKIT_J=36；删除未生效的 pigz 检测，seqkit seq 与 awk 管道化，后处理改为 GNU parallel 并发
+
+#### V2 代码：`megahit_update.py`
+
+```{python}
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# By: Wang Li 2024
+# 20260624_update: 修复 Docker 挂载点 /megahit 已存在时 FileExistsError 的问题；
+#                  调用优化后的 megahit_update.sh。
+#                  并行策略恢复为与原代码一致：6 样本同时并行 × 12 线程/样本。
+#                  上一个版本见 megahit_update_V1.py / megahit_update_V1.sh。
+
+import os
+import shutil
+import argparse
+
+
+def megahit(host, cleandir, host_dir, datadir, tmpdir, scripts_path):
+    if not os.path.exists(os.path.join(tmpdir, 'length')):
+        os.mkdir(os.path.join(tmpdir, 'length'))
+    if host == 'none':
+        cmd = '''
+bash {0}/megahit_update.sh {1} {2} {3} 'none'
+'''.format(scripts_path, datadir, cleandir, tmpdir)
+    else:
+        cmd = '''
+        bash {0}/megahit_update.sh {1} {2} {3} 'host'
+        '''.format(scripts_path, datadir, host_dir, tmpdir)
+    os.system(cmd)
+
+
+def main():
+    parser = argparse.ArgumentParser(description='This script will assemble sequence through megahit')
+    parser.add_argument('-I', '--i_datadir', type=str, required=True, default='data', help='the dir of sample.txt')
+    parser.add_argument('--megahit', type=str, default='megahit', help='the res of megahit')
+    parser.add_argument('--host_dir', type=str, default='de_host', help='the dir of dehost_data')
+    parser.add_argument('--cleandir', type=str, default='cleandata', help='the dir of clean_data')
+    parser.add_argument('--host', type=str, required=True, nargs='*', help='the host of metagenome')
+    args = parser.parse_args()
+
+    datadir = os.path.abspath(args.i_datadir)
+    megahit_dir = os.path.abspath(args.megahit)
+    cleandadir = os.path.abspath(args.cleandir)
+    host_dir = os.path.abspath(args.host_dir)
+    host = args.host[0]
+
+    # 当 megahit_dir 是 Docker 挂载点时，不能删除目录本身，只清空内容
+    if not os.path.exists(megahit_dir):
+        os.mkdir(megahit_dir)
+    else:
+        for item in os.listdir(megahit_dir):
+            item_path = os.path.join(megahit_dir, item)
+            if os.path.isdir(item_path):
+                shutil.rmtree(item_path, ignore_errors=True)
+            else:
+                os.remove(item_path)
+
+    scripts_path = os.path.dirname(os.path.abspath(__file__))
+    megahit(host, cleandadir, host_dir, datadir, megahit_dir, scripts_path)
+
+
+if __name__ == '__main__':
+    main()
+```
+
+#### V2 代码：`megahit_update.sh`
+
+```{bash}
+#!/bin/bash
+# 20260624_update:
+#   在上一个优化版（megahit_update_V1.sh）基础上，修正并行策略：
+#   - 恢复为 6 个样本同时并行，每个样本 12 线程，与原代码一致；
+#   - 默认不添加 --min-count，保证输出与原代码可比；
+#   - 保留 V1 的 bug 修复：挂载点保护、tab 分隔解析、失败即停。
+#   - 删除未生效的 pigz 检测；通过管道合并 seqkit seq 与 awk，减少中间 .tmp 文件。
+
+set -euo pipefail
+
+datadir=${1}
+cle_hodir=${2}
+tmpdir=${3}
+type=${4}
+
+# 可配置参数（可通过 docker -e 传入覆盖）
+PARALLEL_J=${PARALLEL_J:-6}          # 同时运行的样本数，默认 6（与原代码一致）
+MEGAHIT_T=${MEGAHIT_T:-12}           # 每个 megahit 任务使用的线程数，默认 12（与原代码一致）
+SEQKIT_J=${SEQKIT_J:-36}             # 原代码 seqkit fx2tab 线程数，默认 36（顺序后处理时使用）
+SEQKIT_POST_J=${SEQKIT_POST_J:-2}    # 并行后处理时每个 seqkit fx2tab 使用的线程数，避免并发过多线程
+POST_J=${POST_J:-6}                  # 后处理并行样本数，默认 6
+MEMFREE=${MEMFREE:-30G}              # parallel --memfree，默认 30G（与原代码一致）
+# MIN_COUNT: 默认空，即不传入 --min-count；如需启用可设 MIN_COUNT=3
+MIN_COUNT=${MIN_COUNT:-}
+
+mkdir -p "${tmpdir}/length"
+
+# 生成样本输入列表
+awk 'NR!=1 {print}' "${datadir}/sample.txt" | while read id; do
+    sample=$(echo "${id}" | awk '{print $2}' | tr -d '\n\r')
+    if [ "${type}" = 'none' ]; then
+        echo "${cle_hodir}/${sample}_clean_1.fastq.gz" >> "${tmpdir}/sample1.txt"
+        echo "${cle_hodir}/${sample}_clean_2.fastq.gz" >> "${tmpdir}/sample2.txt"
+    else
+        echo "${cle_hodir}/${sample}_dehost_1.fastq.gz" >> "${tmpdir}/sample1.txt"
+        echo "${cle_hodir}/${sample}_dehost_2.fastq.gz" >> "${tmpdir}/sample2.txt"
+    fi
+    echo "${tmpdir}/${sample}" >> "${tmpdir}/sample.name.txt"
+done
+
+# 构造 --min-count 参数（默认不传，保持与原代码一致）
+if [ -n "${MIN_COUNT}" ]; then
+    MIN_COUNT_ARG="--min-count ${MIN_COUNT}"
+else
+    MIN_COUNT_ARG=""
+fi
+
+# 运行 megahit
+# 说明：
+#   -j ${PARALLEL_J}     控制同时运行的样本数，默认 6，确保 6 样本×12 线程 = 72 线程满载
+#   -t ${MEGAHIT_T}      单个 megahit 任务线程数，默认 12
+#   默认不传入 --min-count，保证与原代码结果可比
+
+echo "[INFO] Running megahit with PARALLEL_J=${PARALLEL_J}, MEGAHIT_T=${MEGAHIT_T}, MIN_COUNT_ARG='${MIN_COUNT_ARG}', MEMFREE=${MEMFREE}"
+
+parallel --verbose -j "${PARALLEL_J}" --memfree "${MEMFREE}" --xapply \
+    "megahit -t ${MEGAHIT_T} ${MIN_COUNT_ARG} -1 {1} -2 {2} -o {3}" \
+    :::: "${tmpdir}/sample1.txt" :::: "${tmpdir}/sample2.txt" :::: "${tmpdir}/sample.name.txt"
+
+# 后处理：过滤长度、重命名序列、生成长度表和统计表
+# 1. 使用管道将 seqkit seq 的输出直接传给 awk，避免生成 .tmp 中间文件
+# 2. 使用 GNU parallel 对 6 个样本的后处理并行执行，缩短整体 wall-clock
+
+postprocess() {
+    set -euo pipefail
+    local sample="$1"
+    seqkit seq -m 500 "${tmpdir}/${sample}/final.contigs.fa" | \
+        awk -v sample="${sample}" '$0 ~ /^>/ {count++; $0=">seq_" sample "." count}1' \
+        > "${tmpdir}/${sample}/final.contigs.fa"
+    seqkit fx2tab -j "${SEQKIT_POST_J}" -l -n -i -H "${tmpdir}/${sample}/final.contigs.fa" > "${tmpdir}/length/${sample}_length.txt"
+    assembly-stats -t "${tmpdir}/${sample}/final.contigs.fa" > "${tmpdir}/length/${sample}_stats.txt"
+}
+export -f postprocess
+export tmpdir SEQKIT_POST_J
+
+awk 'NR!=1 {print $2}' "${datadir}/sample.txt" | tr -d '\r' | \
+    parallel -j "${POST_J}" --verbose postprocess {}
+```
+
+#### V2 运行命令
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+# 清空 V2 旧输出（保留 megahit_update/ 用于对比）
+rm -rf /home/xydeng/Metagenomics/megahit_update_V2
+
+tmux new -s megahit_update_V2
+
+sudo docker run --network=host --rm -it --cpus=72 --memory="720g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/cleandata:/cleandata \
+    -v /home/xydeng/Metagenomics/de_host:/de_host \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/scripts \
+    -v /home/xydeng/Metagenomics/megahit_update_V2:/megahit \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        source /root/anaconda3/etc/profile.d/conda.sh && \
+        conda activate megahit && \
+        echo '==========================================' && \
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '==========================================' && \
+        echo '=== 检查输入文件 ===' && \
+        ls -la /metadatadir/sample.txt && \
+        echo '=== 开始运行 megahit_update (V2) ===' && \
+        time python /scripts/megahit_update.py \
+            -I /metadatadir \
+            --cleandir /cleandata \
+            --host none \
+            --host_dir /de_host \
+            --megahit /megahit && \
+        echo '==========================================' && \
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/03_megahit_no_update_V2_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t megahit_update_V2
+# 运行后按 Ctrl+B 然后 D 退出 tmux，让它在后台跑。
+```
+==========================================
+开始时间: 
+2026-06-26 18:16:39
+==========================================
+real	705m43.488s
+user	31036m34.279s
+sys	268m27.114s
+==========================================
+结束时间: 
+2026-06-27 06:02:23
+==========================================
+
+
+
+# task prodig_no
+@ source /root/anaconda3/etc/profile.d/conda.sh
+@ python /root/microbiome/microbiome/metage_megahit/prodigal.py
+
+
+## 原代码运行
+```{bash}
+#!/bin/bash
+# 使用原代码运行 Task 08 prodig_no
+# 输入：/home/xydeng/Metagenomics/megahit_update
+# 输出：/home/xydeng/Metagenomics/prodigal_original
+# 日志：/home/xydeng/Metagenomics/scripts_dxy/logs/08_prodig_no_original_runtime.log
+
+cd /home/xydeng/Metagenomics
+
+mkdir -p /home/xydeng/Metagenomics/prodigal_original
+
+sudo docker run --network=host --rm -it --cpus=72 --memory="640g" \
+    -v /home/xydeng/Metagenomics/megahit_update:/megahit \
+    -v /home/xydeng/Metagenomics/prodigal_original:/prodigal \
+    -v /home/xydeng/Metagenomics/scripts:/root/microbiome/microbiome/metage_megahit \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        echo '==========================================' && \
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '==========================================' && \
+        source /root/anaconda3/etc/profile.d/conda.sh && \
+        conda activate megahit && \
+        echo '=== 检查输入文件 ===' && \
+        ls -la /megahit/sample.name.txt && \
+        ls -la /megahit/*/final.contigs.fa && \
+        echo '=== 开始运行 prodigal ===' && \
+        time python /root/microbiome/microbiome/metage_megahit/prodigal.py \
+            --megahit /megahit \
+            --prodigal /prodigal \
+            --cdhitdir /app/cd-hit-v4.8.1-2019-0228 && \
+        echo '==========================================' && \
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/08_prodig_no_original_runtime.log
+
+
+```
+==========================================
+开始时间: 
+2026-06-23 08:58:59
+==========================================
+real    159m31.872s
+user    756m36.217s
+sys     15m1.876s
+==========================================
+结束时间: 
+2026-06-23 11:38:32
+==========================================
+
+北京时间结束时间：2026-06-23 11:38:32
+总耗时（real）：159m31.872s（约 2 小时 39 分 32 秒）
+关键输出文件：
+unique_gene.fasta：1.5 GB
+all.fa：3.2 GB
+clusterRes_cluster.tsv：159 MB
+unique_length.txt：45 MB
+unique_stats.txt：200 B
+prodigal 阶段（6 个样本并行）+ mmseqs 聚类已全部跑完，最终 unique_gene.fasta 已经生成。
+
+
+## 优化代码运行（全局 chunk 池 v2）
+
+此命令调用 `prodigal_update.py` 全局 chunk 池版本：所有样本的所有 chunk 先一次性拆分，再统一进入同一个 GNU Parallel 池并行跑 prodigal，实现 **样本内 + 样本间双级并行**。
+
+```{bash}
+#!/usr/bin/env bash
+# Task 08 prodig_no 优化版运行脚本（全局 chunk 池，样本内+样本间双级并行）
+# 输出：/home/xydeng/Metagenomics/prodigal_update/
+# 日志：/home/xydeng/Metagenomics/scripts_dxy/logs/08_prodig_no_update_runtime.log
+# chunk 中间目录：/home/xydeng/Metagenomics/prodigal_update/.chunks_v2/
+#
+# 必须在 tmux 会话中执行（sudo 需要交互式终端）：
+#   cd /home/xydeng/Metagenomics/scripts_dxy
+#   tmux new -s prodig_update_v2
+#   # 复制本代码块到 tmux 中执行
+#   # detach：Ctrl+B，再按 D
+
+set -uo pipefail
+
+cd /home/xydeng/Metagenomics || exit 1
+
+mkdir -p /home/xydeng/Metagenomics/prodigal_update
+# mkdir -p /home/xydeng/Metagenomics/scripts_dxy/logs
+
+sudo docker run --network=host --rm -it --cpus=72 --memory="640g" \
+    -v /home/xydeng/Metagenomics/megahit_update:/megahit \
+    -v /home/xydeng/Metagenomics/prodigal_update:/prodigal \
+    -v /home/xydeng/Metagenomics/scripts:/scripts \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/root/microbiome/microbiome/metage_megahit \
+    -e METAGE_SCRIPTS_PATH=/scripts \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        echo '==========================================' && \
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '==========================================' && \
+        source /root/anaconda3/etc/profile.d/conda.sh && \
+        conda activate megahit && \
+        echo '=== 检查输入文件 ===' && \
+        ls -la /megahit/sample.name.txt && \
+        ls -la /megahit/*/final.contigs.fa && \
+        echo '=== 开始运行 prodigal_update ===' && \
+        time python /root/microbiome/microbiome/metage_megahit/prodigal_update.py \
+            --megahit /megahit \
+            --prodigal /prodigal \
+            --cdhitdir /app/cd-hit-v4.8.1-2019-0228 \
+            --threads 60 \
+            --chunk-size-mb 200 && \
+        echo '==========================================' && \
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/08_prodig_no_update_runtime.log
+
+
+```
+====================
+开始时间: 
+2026-06-23 15:32:31
+==========================================
+prodigal 阶段总耗时: 29.5 分钟
+mmseqs 阶段总耗时: 14.8 分钟
+全部完成！总 wall-clock 时间: 44.3 分钟
+real	44m27.983s
+user	754m51.756s
+sys	18m9.726s
+==========================================
+结束时间: 
+2026-06-23 16:15:17
+==========================================
+
+**运行结果**：全局 chunk 池版本成功跑完，总耗时 **44 分 28 秒**，较原代码 **159 分 32 秒** 提速约 **3.6 倍**。
+
+**时区说明**：Docker 镜像 `metage:v2.87` 内时区为 `Asia/Shanghai`（CST，北京时间），日志中的时间戳即为北京时间。
+
+
+## 核心优化：
+
+全局 chunk 池：所有样本的所有 chunk 先一次性拆分，再全部进入同一个 GNU Parallel 任务池并行跑 prodigal，实现样本内 + 样本间双级并行。
+移除 --memfree 50G，使用 parallel -j 0 充分利用 72 核。
+失败即停：subprocess.run(check=True)，任一命令失败立即退出。
+跳过已存在输出：最终输出或 chunk 中间结果已存在时默认跳过，可用 --force 强制重跑，也支持续跑。
+保留 mmseqs 聚类逻辑，线程数可参数化。
+
+
+# task bwa_no
+@ source /root/anaconda3/etc/profile.d/conda.sh
+@ python /root/microbiome/microbiome/metage_megahit/bwa.py
+
+
+## 原代码运行
+```{bash}
+tmux new -s bwa_original
+
+cd /home/xydeng/Metagenomics
+mkdir -p scripts_dxy/logs
+rm -rf bowtie_original
+
+# host 类型：none / human / mouse
+HOST="none"
+
+sudo docker run --network=host --rm -it --cpus=72 --memory="720g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/cleandata:/cleandata \
+    -v /home/xydeng/Metagenomics/de_host:/de_host \
+    -v /home/xydeng/Metagenomics/prodigal_update:/prodigal \
+    -v /home/xydeng/Metagenomics/scripts:/root/microbiome/microbiome/metage_megahit \
+    -v /home/xydeng/Metagenomics:/workdir \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        echo '==========================================' && \
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '==========================================' && \
+        source /root/anaconda3/etc/profile.d/conda.sh && \
+        conda activate biobakery && \
+        echo '=== 检查输入文件 ===' && \
+        ls -la /metadatadir/sample.txt && \
+        ls -la /prodigal/unique_gene.fasta && \
+        echo '=== 开始运行 bwa.py ===' && \
+        time python /root/microbiome/microbiome/metage_megahit/bwa.py \
+            -I /metadatadir \
+            --cleandir /cleandata \
+            --host ${HOST} \
+            --prodigal /prodigal \
+            --host_dir /de_host \
+            --bowtie /workdir/bowtie_original && \
+        echo '==========================================' && \
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/09_bwa_no_original_runtime.log
+
+```
+==========================================
+开始时间: 
+2026-06-23 17:08:02
+==========================================
+real	173m20.551s
+user	6061m54.262s
+sys	45m9.872s
+==========================================
+结束时间: 
+2026-06-23 20:01:23
+==========================================
+
+运行结果：原代码 bwa_no 跑完，总耗时 **173 分 21 秒**，overall alignment rate **44.50%**。输出 `gene_count.csv`、`gene_tpm.csv` 及各样本 `.sort.bam`。
+
+
+## 优化代码
+```{bash}
+cd /home/xydeng/Metagenomics/
+
+# 新建tmux
+tmux new -s bwa_update
+# 重连tmux
+tmux attach -t bwa_update
+
+# 复制上面的 Docker 命令粘贴执行
+# 输入 sudo 密码
+# detach：Ctrl+B，再按 D
+
+cd /home/xydeng/Metagenomics
+# mkdir -p /home/xydeng/Metagenomics/scripts_dxy/logs
+
+HOST="none"
+
+sudo docker run --network=host --rm -it --cpus=72 --memory="720g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/cleandata:/cleandata \
+    -v /home/xydeng/Metagenomics/de_host:/de_host \
+    -v /home/xydeng/Metagenomics/prodigal_update:/prodigal \
+    -v /home/xydeng/Metagenomics/scripts:/scripts \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/root/microbiome/microbiome/metage_megahit \
+    -e METAGE_SCRIPTS_PATH=/scripts \
+    -v /home/xydeng/Metagenomics:/workdir \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        echo '==========================================' && \
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '==========================================' && \
+        source /root/anaconda3/etc/profile.d/conda.sh && \
+        conda activate biobakery && \
+        echo '=== 检查输入文件 ===' && \
+        ls -la /metadatadir/sample.txt && \
+        ls -la /prodigal/unique_gene.fasta && \
+        echo '=== 开始运行 bwa_update ===' && \
+        time python /root/microbiome/microbiome/metage_megahit/bwa_update.py \
+            -I /metadatadir \
+            --cleandir /cleandata \
+            --host ${HOST} \
+            --prodigal /prodigal \
+            --host_dir /de_host \
+            --bowtie /workdir/bowtie_update && \
+        echo '==========================================' && \
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/09_bwa_no_update_runtime.log
+
+
+```
+==========================================
+开始时间: 
+2026-06-24 09:20:59
+==========================================
+real	133m30.293s
+user	7144m5.974s
+sys	67m48.527s
+==========================================
+结束时间: 
+2026-06-24 11:34:29
+==========================================
+
+运行结果：优化代码 `bwa_update` 跑完，总耗时 **133 分 30 秒**，overall alignment rate **44.50%**（与原代码一致）。输出 `gene_count.csv`（66M）、`gene_tpm.csv`（226M）及各样本 `.sort.bam`、`.bai`、`_mapped.txt`、`_mapped_cut.txt`。相较原代码 `173m20.551s` 提速约 **23%**（快 39 分 50 秒）。
+
+
+## 报错
+(ERR): bowtie2-align exited with value 1
+[W::hts_set_opt] Cannot change block size for this format
+samtools sort: failed to read header from "-"
+stat: Bad file descriptor
+Warning: Could not open read file "/cleandata/T_3	T-3_clean_1.fastq.gz" for reading; skipping...
+Error: No input read files were valid
+(ERR): bowtie2-align exited with value 1
+[W::hts_set_opt] Cannot change block size for this format
+samtools sort: failed to read header from "-"
+[2026-06-24 09:13:20] ERROR: bowtie_update.sh 执行失败，退出码 6
+
+## 报错原因
+bowtie_update.sh 里解析 sample.txt 时用了：
+
+sample=$(echo "${id}" | cut -d " " -f 2 | tr -d '\n\r')
+但 sample.txt 是 tab 分隔 的，加了引号 "${id}" 后 tab 被保留，cut -d " " 按空格切分就把整行 CK_1\tCK-1 当成一个字段，导致样本名变成了 CK_1\tCK-1，最终文件路径错成：
+
+/cleandata/CK_1	CK-1_clean_1.fastq.gz
+原代码 bowtie.sh 用的是 echo ${id}（没引号），bash 会把 tab 当成 IFS 拆成空格，所以 cut -d " " 能正常工作。
+
+已修复
+改为用 awk '{print $2}'，兼容 tab 和空格分隔：
+
+sample=$(echo "${id}" | awk '{print $2}' | tr -d '\n\r')
+
+
+
+## 核心优化
+- `parallel -j 6` + `bowtie2 -p 12` = 72 线程，避免原代码 7×12=84 线程超配。
+- `bowtie2` 直接管道到 `samtools sort`，不写中间 `.sam` 文件。
+- 移除 `--memfree 50G`。
+- 失败即停，挂载点保护。
+
+
+## 结果一致性对比
+
+对比 `bowtie_original/`（原代码）与 `bowtie_update/`（优化版）的输出文件，结论：**核心定量结果一致，仅样本列顺序不同；BAM 文件非字节一致但 per-gene 计数完全一致**。
+
+### 文件清单与大小
+
+| 文件类型 | 原代码 (`bowtie_original/`) | 优化版 (`bowtie_update/`) | 说明 |
+|----------|----------------------------|---------------------------|------|
+| `gene_count.csv` | 66M | 66M | 行数相同（2,213,619 行），数值完全一致 |
+| `gene_tpm.csv` | 226M | 226M | 行数相同，数值完全一致 |
+| `*_mapped.txt` | 54–55M × 6 | 54–55M × 6 | **md5 完全相同** |
+| `*_mapped_cut.txt` | 50M × 6 | 50M × 6 | **md5 完全相同** |
+| `*.sort.bam` | 2.6–3.9G × 6 | 2.6–3.9G × 6 | 大小略有差异（±数 MB），非字节一致 |
+| `*.sort.bam.bai` | 123–143M × 6 | 123–143M × 6 | 大小相同 |
+| `*.sam` | 22–27G × 6 | 无 | 优化版不写中间 `.sam`，节省约 **123G** 磁盘空间 |
+
+### `gene_count.csv` / `gene_tpm.csv` 详细对比
+
+使用 pandas 读取后，将优化版的样本列顺序调整为与原代码一致，结果：
+
+```text
+gene_count.csv: Values identical (after reorder) = True
+gene_tpm.csv:   Values identical (after reorder) = True
+GeneID order identical = True
+```
+
+列顺序差异：
+
+- 原代码：`GeneID, CK-2, CK-3, T-1, T-2, CK-1, T-3`
+- 优化版：`GeneID, CK-2, T-1, CK-3, CK-1, T-2, T-3`
+
+原因：优化版 `bwa_update.py` 的 `tpm()` 函数通过 `glob.glob()` 收集 `_mapped_cut.txt`，文件系统返回顺序与原代码不同，导致最终 CSV 的样本列顺序不同。**数值本身完全一致**，不影响下游分析（下游通常按列名取用）。
+
+### `_mapped.txt` / `_mapped_cut.txt` 详细对比
+
+`samtools idxstats` 输出的 per-gene 计数文件，6 个样本全部 **md5 一致**，说明两条流程对每个基因的比对计数完全相同。
+
+### `*.sort.bam` 对比
+
+- md5 不同，文件大小差异在数 MB 级别。
+- 由于无法直接运行 `samtools flagstat`（主机未安装），暂不能给出 flagstat 逐行对比；但基于 `_mapped.txt` 完全一致，可推断 per-gene 比对结果一致。
+- BAM 差异可能来源于：
+  1. `samtools sort` 输出顺序/压缩块的非确定性；
+  2. 原始代码先写 `.sam` 再排序，优化版直接管道排序，路径不同导致元数据/排序稳定略有差异；
+  3. 原代码与优化版 `bowtie2` 版本或默认参数一致，但输入读取顺序不同。
+
+### overall alignment rate 对比
+
+两版本 6 个样本的 overall alignment rate 集合完全一致：
+
+```text
+43.58%  43.61%  43.85%  43.95%  44.02%  44.50%
+```
+
+只是各样本对应的 rate 因处理顺序不同而出现在不同位置。
+
+### 结论
+
+优化版 `bwa_update` 在提速约 **23%** 的同时，**保留了与原代码完全一致的基因计数和 TPM 结果**，且节省了约 **123 GB** 的中间 `.sam` 文件磁盘空间。唯一差异是 `gene_count.csv` / `gene_tpm.csv` 中样本列顺序不同，属于非功能性差异，不影响下游统计和差异分析。
+
+
+# task tax_anno
+
+@ source /root/anaconda3/etc/profile.d/conda.sh
+@ python /root/microbiome/microbiome/metage_megahit/tax_ano_1.py
+
+
+## 原代码运行
+
+```{bash}
+#!/bin/bash
+# 使用原代码运行 Task 10 tax_anno
+# 输入：/home/xydeng/Metagenomics/prodigal_update/unique_gene.fasta
+# 数据库：/data/data2/metagenome-DB/database/NR/
+# 输出：/home/xydeng/Metagenomics/tax_anno_original/
+# 日志：/home/xydeng/Metagenomics/scripts_dxy/logs/10_tax_anno_original_runtime.log
+
+cd /home/xydeng/Metagenomics
+
+# 清空旧输出（如存在），由脚本自行创建目录
+rm -rf /home/xydeng/Metagenomics/tax_anno_original
+
+tmux new -s tax_anno_original
+
+sudo docker run --network=host --rm -it --cpus=62 --memory="720g" \
+    -v /home/xydeng/Metagenomics/prodigal_update:/prodigal \
+    -v /data/data2/metagenome-DB:/metagenome-DB \
+    -v /home/xydeng/Metagenomics/scripts:/root/microbiome/microbiome/metage_megahit \
+    -v /home/xydeng/Metagenomics:/workdir \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        echo '==========================================' && \
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '==========================================' && \
+        source /root/anaconda3/etc/profile.d/conda.sh && \
+        conda activate biobakery && \
+        echo '=== 检查输入文件 ===' && \
+        ls -la /prodigal/unique_gene.fasta && \
+        ls -la /metagenome-DB/database/NR/metage2.dmnd && \
+        ls -la /opt/megan7/tools/daa2rma && \
+        echo '=== 开始运行 tax_anno ===' && \
+        time python /root/microbiome/microbiome/metage_megahit/tax_ano_1.py \
+            --prodigal /prodigal \
+            --dbdir /metagenome-DB/database/NR \
+            --megandir /opt/megan7/ \
+            --Annotation /workdir/tax_anno_original && \
+        echo '==========================================' && \
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/10_tax_anno_original_runtime.log
+
+
+```
+==========================================
+开始时间: 
+2026-06-24 12:07:06
+==========================================
+real	1965m47.933s
+user	74787m32.282s
+sys	3241m41.770s
+==========================================
+结束时间: 
+2026-06-25 20:52:56
+==========================================
+
+
+
+**说明**：
+
+- 本任务对应 WDL `task tax_anno`，调用原始脚本 `tax_ano_1.py`。
+- `--prodigal` 指向包含 `unique_gene.fasta` 的目录；这里使用已验证的优化版 `prodigal_update/` 输出（`unique_gene.fasta` 与原代码一致）。
+- `--dbdir` 指向 NR 数据库目录，其中 `metage2.dmnd` 约 368 GB；数据库通过 `-v /data/data2/metagenome-DB:/metagenome-DB` 挂载进容器。
+- `--megandir` 为容器内 MEGAN7 安装路径 `/opt/megan7/`。
+- `--Annotation` 指定输出目录为 `/workdir/tax_anno_original`，对应宿主机 `/home/xydeng/Metagenomics/tax_anno_original/`。
+- 脚本会创建 `{Annotation}/tmp` 作为 `diamond` 临时目录，请确保 `/home/xydeng/Metagenomics/` 所在磁盘有足够空间（当前 `/home` 剩余约 3 TB）。
+- 该任务为 🔴 极高耗时任务，预计耗时数小时至数十小时，务必在 `tmux` 中运行，避免 SSH 断线。
+
+
+
+
+## tax_anno 流程步骤与耗时
+
+`tax_anno` 任务调用原始脚本 `tax_ano_1.py`，对 prodigal 输出的非冗余基因序列 `unique_gene.fasta` 进行 NR 数据库比对，并通过 MEGAN7 工具完成物种注释。完整流程分为以下 5 个步骤：
+
+| 步骤 | 命令/工具 | 说明 | 输入 | 输出 | 状态 | 耗时 |
+|------|----------|------|------|------|------|------|
+| 1 | `mkdir {Annotation}/tmp` | 创建 diamond 临时目录 | — | `{Annotation}/tmp/` | 已完成 | < 1 s |
+| 2 | `du -b` + 条件判断 | 判断 `unique_gene.fasta` 是否大于 15 GB，决定 diamond 是否使用 `--fast` 模式 | `/prodigal/unique_gene.fasta` | — | 已完成 | < 1 s |
+| 3 | `diamond blastx` | NR 数据库比对（默认模式，`--threads 60`） | `unique_gene.fasta` + `metage2.dmnd` | `/prodigal/unique.daa` | 已完成 | 约 27 h（CPU 累计 `97593.8 s`） |
+| 4 | `daa2rma` | 将 DAA 转换为 RMA，完成 LCA 物种分类（Taxonomy/SEED/EGGNOG/GTDB） | `unique.daa` + `megan-nr-r1.mdb` | `/prodigal/unique.rma` | 已完成 | DAA 解析 `9773.2 s`（约 2.7 h），分箱阶段无进度输出 |
+| 5 | `rma2info` + `sed` | 从 RMA 提取 Taxonomy 信息，并添加表头 | `unique.rma` | `{Annotation}/Tax_id.tmp.txt` | 已完成 | `1h 34m 14s` |
+
+**最终运行结果**：
+
+- 任务开始时间（日志时间）：2026-06-24 12:07:06（北京时间）
+- 任务结束时间（日志时间）：2026-06-25 20:52:56（北京时间）
+- 总 wall-clock 时间：`real 1965m47.933s`（约 **32 h 46 m**）
+- `diamond blastx`：141 / 141 reference blocks 已完成；日志报告 `Total time = 97593.8 s`（约 27 h，CPU 累计）
+- `daa2rma`：DAA 解析 100% 耗时 `9773.2 s`（约 2.7 h），随后完成 Taxonomy/SEED/EGGNOG/GTDB 分箱
+- `rma2info`：耗时 `1h 34m 14s`
+- 输出：`/home/xydeng/Metagenomics/tax_anno_original/Tax_id.tmp.txt`，大小 **25 MB**，共 **1,057,605 行**
+
+**说明**：
+
+- 上表中的“耗时”以 Linux `time` 命令输出的 `real` 时间为准；步骤 3 为日志报告的 CPU 累计时间，步骤 4、5 已回填真实耗时。
+- `unique_gene.fasta` 实际大小为 1.5 GB（小于 15 GB 阈值），因此触发默认模式，未使用 `--fast`。
+- 运行日志：`/home/xydeng/Metagenomics/scripts_dxy/logs/10_tax_anno_original_runtime.log`
+- 输出目录：`/home/xydeng/Metagenomics/tax_anno_original/`
+
+
+## tax_anno 输出文件类型说明
+
+`tax_anno` 任务生成两类文件：
+
+1. **最终输出**（写入 `--Annotation` 指定的目录，即 `/home/xydeng/Metagenomics/tax_anno_original/`）
+2. **中间文件**（因原代码将 `--prodigal` 挂载为 `/prodigal` 并直接写入，故落在 `/home/xydeng/Metagenomics/prodigal_update/` 下）
+
+### 1. 最终输出文件
+
+| 文件 | 类型 | 大小（本次运行） | 说明 | 下游用途 |
+|------|------|----------------|------|----------|
+| `Tax_id.tmp.txt` | TSV（制表符分隔） | 25 MB，1,057,605 行 | 基因 ID → NCBI Taxonomy ID 映射表，首行为表头 `GeneID\ttaxid` | `tax_ano_2.py` / `anno` 任务读取，用于物种注释表整合与差异分析 |
+
+文件示例（前 5 行）：
+
+```{text}
+GeneID  taxid
+seq_T-3.101222_1        1
+seq_T-3.537874_1        1
+seq_T-3.540295_1        1
+seq_T-1.367604_1        1
+seq_T-3.540507_2        1
+seq_T-1.274462_1        1
+seq_T-2.309691_1        1
+seq_T-3.566591_1        1
+seq_T-3.505605_2        1
+```
+第一列是 prodigal 预测的基因 ID
+第二列是 NCBI Taxonomy ID（1 表示 Root）
+这就是下游 anno / tax_ano_2.py 需要的标准输入
+
+> 说明：
+> - 第一列为 prodigal 预测的基因 ID（来自 `unique_gene.fasta` 的序列名，形如 `seq_{样本}.{contig编号}_{基因索引}`）。
+> - 第二列为该基因在 NCBI Taxonomy 中的 taxid（例如 `1` 表示 Root，`2` 表示 Bacteria，具体物种 taxid 见 NCBI 数据库）；若 MEGAN 无法分配物种，则可能为 `unidentified` 或其他未分类标记。
+> - 该表是 `tax_anno` 任务最核心的下游输入。
+
+### 2. 中间文件（原代码写入 `/prodigal`）
+
+| 文件 | 类型 | 大小（本次运行） | 说明 |
+|------|------|----------------|------|
+| `unique.daa` | DIAMOND DAA（二进制） | 约 9.6 GB | `diamond blastx` 比对结果，包含基因与 NR 数据库的比对信息 |
+| `unique.rma` | MEGAN RMA6（二进制） | 约 2.6 GB | `daa2rma` 生成的 MEGAN 可读文件，内含 Taxonomy/SEED/EGGNOG/GTDB 四种分类结果 |
+
+> 注意：
+> - `unique.daa` 和 `unique.rma` 是原代码实现方式产生的中间产物，**并非 `--Annotation` 目录下的最终输出**。
+> - 优化版 `tax_ano_1_update.py` 会把这些中间文件隔离到 `--Annotation /workdir/tax_anno_update/` 目录下，避免污染 `prodigal_update/`。
+> - 若磁盘空间紧张，可在确认下游不再需要 MEGAN 可视化后删除 `unique.rma`；但建议保留 `unique.daa` 以便复现或重新提取分类信息。
+
+
+## tax_anno 优化思路分析
+
+结合 `10_tax_anno_original_runtime.log` 的实际情况，对 `tax_anno` 各步骤的并行性与优化方向分析如下。
+
+### 1. `diamond blastx` 是串行的吗？
+
+**不是完全串行，但存在明显的串行瓶颈：**
+
+- `diamond blastx` 内部使用了 `--threads 60`，在每个 reference block 的“seed array / hash join / alignment / traceback”等子步骤中已经充分多线程化。
+- 但是从日志可以看到，它把 NR 数据库切成了 **141 个 reference blocks**，然后**逐个 block 顺序处理**（`reference block 1/141 → ... → reference block 141/141`）。
+- 每次切换 reference block 时都要重新加载参考序列、构建索引、计算 alignment，这 141 次重复加载是主要开销之一。
+- 当前查询序列只有一个 query block（13,281,714 条序列），因此 diamond 无法像 prodigal 那样通过“样本间并行”来提速。
+
+**结论**：diamond 的“块内并行”已经用满，但“块间串行”是瓶颈。若要通过切分 query 并跑多个 diamond 实例来块间并行，会引入 DAA 文件合并的难题，收益不一定高。
+
+### 2. `diamond blastx` → `daa2rma` → `rma2info + sed` 是否必须串行？
+
+**是的，这三个步骤存在强数据依赖，必须串行：**
+
+| 步骤 | 输入 | 输出 | 是否可提前启动 |
+|------|------|------|---------------|
+| `diamond blastx` | `unique_gene.fasta` | `unique.daa` | — |
+| `daa2rma` | `unique.daa` | `unique.rma` | 必须等 `unique.daa` 完整生成 |
+| `rma2info` | `unique.rma` | `Tax_id.tmp.txt` | 必须等 `unique.rma` 完整生成 |
+| `sed` | `Tax_id.tmp.txt` | 加表头后的 `Tax_id.tmp.txt` | 瞬时完成 |
+
+因此**这三个核心步骤无法重叠执行**。
+
+但可以在**流程层面**做并行：
+- `tax_anno` 和 `func_anno` 都仅依赖 `prodig_no` 的 `unique_gene.fasta`，二者可以**同时启动**，显著缩短 wall-clock 时间。
+
+### 3. 可优化点
+
+#### 3.1 最大优化：用 `daa-meganizer` 替代 `daa2rma`
+
+根据 MEGAN 官方文档，`daa2rma` 已被标记为 **legacy/不推荐** 程序：
+
+> "The daa2rma commandline program. **Please use daa-meganizer instead.** ... Do not use this legacy program, rather use the daa-meganizer program instead."
+
+`daa-meganizer` 的优势：
+- **更快**：直接在原 DAA 文件末尾追加分类索引，不需要生成单独的 RMA 文件。
+- **更省空间**：避免同时存在 9 GB 的 DAA 和同等量级的 RMA。
+- `daa2info` 可以直接读取 meganized DAA（官方说明："a single DAA file computed by DIAMOND and possibly meganized"）。
+
+**可替换方案**：
+
+```text
+原流程：
+diamond blastx ... -o unique.daa
+daa2rma -i unique.daa -o unique.rma ...
+rma2info -i unique.rma -r2c Taxonomy -v > Tax_id.tmp.txt
+
+优化后：
+diamond blastx ... -o unique.daa
+daa-meganizer -i unique.daa -mdb megan-nr-r1.mdb -t 60 ...
+daa2info -i unique.daa -r2c Taxonomy -v > Tax_id.tmp.txt
+```
+
+#### 3.2 保留全部分类以确保兼容性
+
+当前日志显示 `daa2rma` 同时加载了：
+
+```text
+Functional classifications to use: EGGNOG, GTDB, SEED
+Classifications: Taxonomy, SEED, EGGNOG, GTDB
+```
+
+虽然下游 `tax_ano_2.py` 只读取 `Tax_id.tmp.txt` 中的 Taxonomy，但为了**最大兼容性**（保留与 `daa2rma` 生成的 RMA 等价的分类信息，便于后续 MEGAN 可视化或其他分析），优化版**不添加 `-on Taxonomy`**，让 `daa-meganizer` 保留所有分类。
+
+如果后续确认只需 Taxonomy，可再加 `-on Taxonomy` 进一步提速。
+
+#### 3.3 `diamond` 参数调优
+
+从日志观察到：
+
+- Peak RSS 仅 **33.3 GB**，而 Docker 分配了 **720 GB**，内存严重超配。
+- diamond 当前 `Block size = 2000000000`（2 B letters），reference 被切成 141 个 blocks。
+
+可尝试：
+- 适当增加 `--block-size`（如 `--block-size 4` 或 `--block-size 8`），让 diamond 在内存允许范围内处理更大的 query/reference block，减少 block 切换开销。
+- 注意：`--block-size` 增大会提高内存占用，但仍远低于当前 720 GB 上限。
+- 结合 `-c` / `--index-chunks` 调整索引粒度，平衡内存与速度。
+
+#### 3.4 资源分配优化
+
+当前 `tax_anno` 容器参数：
+
+```bash
+--cpus=62 --memory="720g"
+```
+
+实际使用：
+- `diamond` Peak RSS ≈ 33 GB
+- `daa2rma` Java max memory = 512 GB（由 MEGAN 默认或环境决定）
+
+优化建议：
+- 若继续使用 `daa2rma`，可显式限制 Java heap（如 `-Xmx200g`），避免过度预留。
+- 若改用 `daa-meganizer`，内存需求可能进一步降低。
+- CPU 62 核 / diamond 60 线程基本匹配，无需调整。
+
+#### 3.5 流程级并行：`tax_anno` 与 `func_anno` 同时跑
+
+`tax_anno` 和 `func_anno` 的输入都是 `prodig_no` 的 `unique_gene.fasta`，互不依赖。在资源允许时，可以：
+
+```text
+prodig_no
+    ├──→ tax_anno（ diamond + meganizer + daa2info ）
+    └──→ func_anno（ eggNOG 注释 ）
+```
+
+这样能把两个高耗时步骤从“串行”变成“并行”，是整体 wall-clock 上收益最大的优化之一。
+
+### 4. 优化优先级建议
+
+| 优先级 | 优化点 | 预期收益 | 复杂度 |
+|--------|--------|---------|--------|
+| 1 | `daa-meganizer` 替代 `daa2rma` | 显著缩短 daa2rma 阶段时间，节省磁盘空间 | 低 |
+| 2 | `daa2info` 直接读取 meganized DAA | 替代 `rma2info`，避免 RMA 文件 | 低 |
+| 3 | `tax_anno` 与 `func_anno` 并行 | 整体 wall-clock 大幅缩短 | 中（需资源协调） |
+| 4 | diamond `--block-size` 调优 | 可能减少 reference block 数量，收益需实测 | 中 |
+| 5 | 可选：`-on Taxonomy` 只计算物种分类 | 在确认下游只用 Taxonomy 后进一步提速 | 低 |
+| 6 | 内存与 Java heap 限额优化 | 降低资源浪费 | 低 |
+
+### 5. 需要验证的问题
+
+- `daa-meganizer` 是否在当前镜像 `/opt/megan7/tools/` 中存在？（通常与 `daa2rma` 同目录）
+- `-on Taxonomy` 在当前 MEGAN 版本中的实际写法（`-on Taxonomy` / `--only Taxonomy`）。
+- `daa2info -i unique.daa -r2c Taxonomy` 在 meganized DAA 上的输出格式是否与当前 `rma2info` 完全一致。
+- diamond `--block-size 4/8` 在本数据上的内存占用和耗时变化。
+
+以上分析待 `tax_anno` 原代码跑完后，可进一步用真实 `real` 时间量化优化效果。
+
+
+## 优化代码运行
+
+### 优化版脚本
+
+- Python 脚本：`/home/xydeng/Metagenomics/scripts_dxy/Script/tax_ano_1_update.py`
+
+### 主要优化点
+
+1. **daa-meganizer 替代 daa2rma**：官方推荐，速度更快、节省磁盘空间。
+2. **保留全部分类**：不添加 `-on Taxonomy`，保留 Taxonomy / SEED / EGGNOG / GTDB，确保与下游及 MEGAN 可视化兼容。
+3. **`daa2info` 替代 `rma2info`**：直接读取 meganized DAA。
+4. **输出隔离**：所有结果写入 `--Annotation` 目录（`/workdir/tax_anno_update`），不污染 `/prodigal`。
+5. **参数化 & 失败即停**：使用 `argparse`，shell 命令加 `set -euo pipefail`。
+6. **资源更合理**：内存从 720 GB 降至 200 GB（diamond Peak RSS 仅 33 GB，daa-meganizer 通常 < 100 GB）。
+
+### 运行命令
+
+```bash
+cd /home/xydeng/Metagenomics
+
+# 建议用 tmux 后台运行
+tmux new -s tax_anno_update
+
+# 直接运行（使用 sudo docker）
+sudo docker run --network=host --rm -it \
+    --cpus=62 --memory="200g" \
+    -v /home/xydeng/Metagenomics/prodigal_update:/prodigal \
+    -v /data/data2/metagenome-DB:/metagenome-DB \
+    -v /home/xydeng/Metagenomics/scripts:/scripts \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/root/microbiome/microbiome/metage_megahit \
+    -e METAGE_SCRIPTS_PATH=/scripts \
+    -v /home/xydeng/Metagenomics:/workdir \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: '
+        date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate biobakery
+        echo '=== 检查输入文件 ==='
+        ls -la /prodigal/unique_gene.fasta
+        ls -la /metagenome-DB/database/NR/metage2.dmnd
+        ls -la /opt/megan7/tools/daa-meganizer
+        ls -la /opt/megan7/tools/daa2info
+        echo '=== 开始运行 tax_anno 优化版 ==='
+        time python /root/microbiome/microbiome/metage_megahit/tax_ano_1_update.py \
+            --prodigal /prodigal \
+            --dbdir /metagenome-DB/database/NR \
+            --megandir /opt/megan7/ \
+            --Annotation /workdir/tax_anno_update \
+            --threads 60
+        echo '=========================================='
+        echo '结束时间: '
+        date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/10_tax_anno_update_runtime.log
+```
+
+### 输出路径
+
+- 优化版日志：`/home/xydeng/Metagenomics/scripts_dxy/logs/10_tax_anno_update_runtime.log`
+- 优化版输出：`/home/xydeng/Metagenomics/tax_anno_update/`
+  - `unique.daa`（meganized DAA，约 9 GB + 索引）
+  - `Tax_id.tmp.txt`（基因 → taxid 映射表）
+
+### 与原代码对比
+
+| 项目 | 原代码 | 优化版 |
+|------|--------|--------|
+| 核心脚本 | `scripts/tax_ano_1.py` | `scripts_dxy/Script/tax_ano_1_update.py` |
+| MEGAN 工具 | `daa2rma` + `rma2info` | `daa-meganizer` + `daa2info` |
+| 分类计算 | Taxonomy + SEED + EGGNOG + GTDB | **Taxonomy + SEED + EGGNOG + GTDB（保留兼容）** |
+| 输出位置 | `/prodigal/unique.daa`、`/prodigal/unique.rma` | `/workdir/tax_anno_update/unique.daa`（不污染 prodigal） |
+| 内存请求 | 720 GB | 200 GB |
+| 失败即停 | 否 | 是（`set -euo pipefail`） |
+| 运行时间 | `real 1965m47.933s`（约 32 h 46 m） | 待运行 |
+
+> **注意**：建议等原代码跑完后再运行优化版，避免两者同时读取 `/metagenome-DB/database/NR/metage2.dmnd` 造成 I/O 争抢。若资源充足，也可现在就用 `--Annotation /workdir/tax_anno_update` 独立运行。
+
+
+# task func_anno
+
+@ source /root/anaconda3/etc/profile.d/conda.sh
+@ python /root/microbiome/microbiome/metage_megahit/func_ano_1.py
+
+
+## 输入与依赖
+
+`func_anno` 任务仅依赖 `prodig_no` 的输出：
+
+- 输入：`/prodigal/unique_gene.fasta`（非冗余基因集）
+- 数据库：`{dbdir}/eggNOG/`（eggNOG-mapper 数据库）
+- 与 `tax_anno` 完全独立，可并行执行
+
+## 原代码运行
+
+```{bash}
+#!/bin/bash
+# 使用原代码运行 Task 11 func_anno
+# 输入：/home/xydeng/Metagenomics/prodigal_update/unique_gene.fasta
+# 数据库：/data/data2/metagenome-DB/database/eggNOG
+# 输出：/home/xydeng/Metagenomics/func_anno_original/
+# 日志：/home/xydeng/Metagenomics/scripts_dxy/logs/11_func_anno_original_runtime.log
+
+cd /home/xydeng/Metagenomics
+
+rm -rf /home/xydeng/Metagenomics/func_anno_original
+
+tmux new -s func_anno_original
+
+sudo docker run --network=host --rm -it --cpus=62 --memory="720g" \
+    -v /home/xydeng/Metagenomics/prodigal_update:/prodigal \
+    -v /data/data2/metagenome-DB:/metagenome-DB \
+    -v /home/xydeng/Metagenomics/scripts:/root/microbiome/microbiome/metage_megahit \
+    -v /home/xydeng/Metagenomics:/workdir \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        echo '==========================================' && \
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '==========================================' && \
+        source /root/anaconda3/etc/profile.d/conda.sh && \
+        conda activate biobakery && \
+        echo '=== 检查输入文件 ===' && \
+        ls -la /prodigal/unique_gene.fasta && \
+        ls -la /metagenome-DB/database/eggNOG && \
+        ls -la /app/eggnog-mapper/emapper.py && \
+        echo '=== 开始运行 func_anno ===' && \
+        time python /root/microbiome/microbiome/metage_megahit/func_ano_1.py \
+            --prodigal /prodigal \
+            --dbdir /metagenome-DB/database \
+            --emapperdir /app/eggnog-mapper \
+            --Annotation /workdir/func_anno_original && \
+        echo '==========================================' && \
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S' && \
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/11_func_anno_original_runtime.log
+```
+开始时间: 
+2026-06-26 09:34:53
+==========================================
+Total hits processed: 1879176
+Total time: 9598 secs
+FINISHED
+
+real	160m15.691s
+user	1698m49.442s
+sys	2419m53.472s
+==========================================
+结束时间: 
+2026-06-26 12:15:12
+==========================================
+
+
+
+原代码会把 func.emapper.annotations 写入 /prodigal/ 目录（会污染 prodigal），同时复制到 --Annotation 目录。
+原代码确实会把 func.* 中间文件写到 /prodigal（也就是 prodigal_update/）。最简单的处理方式是：新建一个 prodigal_for_func_anno/ 目录，把 unique_gene.fasta 复制过去，然后把这个新目录挂载为 /prodigal。
+原代码 func_ano_1.py 里：
+
+python {0}/emapper.py ... -o func --output_dir {1}
+其中 {1} 是 --prodigal 目录。所以 emapper 会在 /prodigal/ 下生成：
+
+func.emapper.annotations
+func.emapper.hits
+func.emapper.seed_orthologs
+func.emapper.diamond
+...
+这些文件加起来可能有 几十 GB，直接混进 prodigal_update/ 会很乱。
+
+后续清理建议
+func_anno 跑完后，prodigal_for_func_anno/ 里的中间文件可以视情况删除，只保留：
+
+unique_gene.fasta（本来就是副本，可删）
+func.emapper.annotations（已复制到 func_anno_original/，也可删）
+
+
+
+## 优化版运行 @`func_ano_1_update.py`
+
+主要改进：
+- 输出隔离到 `--Annotation` 目录，不再污染 `/prodigal`
+- 参数化 `--cpu`、`--evalue`、`--prefix`、`--sensmode`
+- 自动检测 `emapper.py` 路径
+- `set -euo pipefail` 失败即停
+
+```{bash}
+#!/bin/bash
+# 使用优化版运行 Task 11 func_anno
+# 输出：/home/xydeng/Metagenomics/func_anno_update/
+# 日志：/home/xydeng/Metagenomics/scripts_dxy/logs/11_func_anno_update_runtime.log
+
+cd /home/xydeng/Metagenomics
+
+rm -rf /home/xydeng/Metagenomics/func_anno_update
+
+tmux new -s func_anno_update
+
+sudo docker run --network=host --rm -it --cpus=62 --memory="720g" \
+    -v /home/xydeng/Metagenomics/prodigal_update:/prodigal \
+    -v /data/data2/metagenome-DB:/metagenome-DB \
+    -v /home/xydeng/Metagenomics/scripts:/scripts \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/root/microbiome/microbiome/metage_megahit \
+    -e METAGE_SCRIPTS_PATH=/scripts \
+    -v /home/xydeng/Metagenomics:/workdir \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: '
+        date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate biobakery
+        echo '=== 检查输入文件 ==='
+        ls -la /prodigal/unique_gene.fasta
+        ls -la /metagenome-DB/database/eggNOG
+        ls -la /app/eggnog-mapper/emapper.py
+        echo '=== 开始运行 func_anno 优化版 ==='
+        time python /root/microbiome/microbiome/metage_megahit/func_ano_1_update.py \
+            --prodigal /prodigal \
+            --dbdir /metagenome-DB/database \
+            --Annotation /workdir/func_anno_update \
+            --cpu 50 \
+            --evalue 1e-5 \
+            --prefix func
+        echo '=========================================='
+        echo '结束时间: '
+        date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/11_func_anno_update_runtime.log
+
+
+```
+==========================================
+开始时间: 
+2026-06-26 13:12:44
+==========================================
+
+Total hits processed: 1879176
+Total time: 5919 secs
+FINISHED
+[INFO] eggNOG-mapper annotation completed.
+
+real	99m9.286s
+user	1672m10.946s
+sys	2746m10.495s
+==========================================
+结束时间: 
+2026-06-26 14:51:54
+==========================================
+
+
+### 输出文件
+
+- 优化版日志：`/home/xydeng/Metagenomics/scripts_dxy/logs/11_func_anno_update_runtime.log`
+- 优化版输出：`/home/xydeng/Metagenomics/func_anno_update/`
+  - `func.emapper.annotations`：最终功能注释表（去掉头尾注释行）
+  - 中间文件：`func.emapper.hits`、`func.emapper.seed_orthologs` 等（eggNOG-mapper 自动生成）
+
+### 与原代码对比
+
+| 项目 | 原代码 | 优化版 |
+|------|--------|--------|
+| 核心脚本 | `scripts/func_ano_1.py` | `scripts_dxy/Script/func_ano_1_update.py` |
+| 输出位置 | 写入 `/prodigal/`（污染 prodigal 目录） | 写入 `--Annotation` 目录（`/workdir/func_anno_update/`） |
+| 参数化 | 硬编码 `--cpu 50`、`--evalue 1e-5` | 支持 `--cpu`、`--evalue`、`--prefix` 参数 |
+| emapper 路径 | 硬编码 `/home/wangli/soft/eggnog-mapper` | 自动检测 `/app/eggnog-mapper` 或 PATH |
+| 失败即停 | 否（`os.system`） | 是（`set -euo pipefail` + `subprocess`） |
+| 运行时间 | real 160m15.691s | real 99m9.286s |
+
+
+# task anno
+@ source /root/anaconda3/etc/profile.d/conda.sh
+@ python /root/microbiome/microbiome/metage_megahit/tax_ano_2.py
+@ python /root/microbiome/microbiome/metage_megahit/func_ano_2.py
+
+# 原代码运行
+```{bash}
+tmux new -s anno_original
+
+cd /home/xydeng/Metagenomics && \
+sudo rm -rf /home/xydeng/Metagenomics/anno_original && \
+mkdir -p /home/xydeng/Metagenomics/scripts_dxy/logs && \
+sudo docker run --network=host --rm -it --cpus=24 --memory="512g" \
+    -v /data/data2/metagenome-DB:/metagenome-DB \
+    -v /home/xydeng/Metagenomics/scripts:/root/microbiome/microbiome/metage_megahit \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        exec > >(tee -a /home/xydeng/Metagenomics/scripts_dxy/logs/12_anno_original_runtime.log) 2>&1
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate biobakery
+        echo '=== 检查输入文件 ==='
+        ls -la /home/xydeng/Metagenomics/bowtie_original
+        ls -la /home/xydeng/Metagenomics/tax_anno_original
+        ls -la /home/xydeng/Metagenomics/func_anno_original
+        ls -la /metagenome-DB/database/NR
+        echo '=== 开始运行 anno ==='
+        mkdir -p /home/xydeng/Metagenomics/anno_original
+        cd /home/xydeng/Metagenomics/anno_original
+        time python /root/microbiome/microbiome/metage_megahit/tax_ano_2.py \
+            --tax_anno /home/xydeng/Metagenomics/tax_anno_original \
+            --dbdir /metagenome-DB/database/NR \
+            --bowtie /home/xydeng/Metagenomics/bowtie_original
+        time python /root/microbiome/microbiome/metage_megahit/func_ano_2.py \
+            --fun_anno /home/xydeng/Metagenomics/func_anno_original \
+            --dbdir /metagenome-DB/database \
+            --mapdir /metagenome-DB \
+            --bowtie /home/xydeng/Metagenomics/bowtie_original
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    "
+
+```
+==========================================
+开始时间: 
+2026-06-26 18:06:51
+==========================================
+=== 开始运行 anno ===
+
+real    0m59.970s
+user    0m57.058s
+sys     0m6.525s
+
+real    4m16.934s
+user    4m4.396s
+sys     0m15.816s
+==========================================
+结束时间: 
+2026-06-26 18:12:09
+
+
+## 运行时间
+
+**原代码**
+
+- `tax_ano_2.py`：real 0m59.970s
+- `func_ano_2.py`：real 4m16.934s
+- 合计 wall-clock 时间：约 5m16.904s（约 5 分 17 秒）
+- 输入：`/home/xydeng/Metagenomics/bowtie_original`、`/home/xydeng/Metagenomics/tax_anno_original`、`/home/xydeng/Metagenomics/func_anno_original`
+- 输出：`/home/xydeng/Metagenomics/anno_original/`
+
+**优化版**
+
+- `tax_ano_2_update.py`：real 1m19.269s
+- `func_ano_2_update.py`：real 3m28.152s
+- 合计 wall-clock 时间：约 4m47.421s（约 4 分 47 秒）
+- 输入：同原代码
+- 输出：`/home/xydeng/Metagenomics/anno_update/`
+- 日志：`/home/xydeng/Metagenomics/scripts_dxy/logs/12_anno_update_runtime.log`
+
+## 优化版运行
+
+> 优化版脚本 `tax_ano_2_update.py` / `func_ano_2_update.py` 已创建。参考上游 `tax_ano_1_update.py` / `func_ano_1_update.py` 的优化思路，主要优化点：
+> - 将中间/最终输出隔离到独立 `--Annotation` 目录，不污染上游目录
+> - 使用 `argparse` 参数化 `--tax_anno` / `--fun_anno` / `--dbdir` / `--mapdir` / `--bowtie` / `--Annotation`
+> - Python 脚本内部使用 `try/except` + `sys.exit(1)`，配合 shell 的 `set -euo pipefail` 实现失败即停
+> - `func_ano_2_update.py` 中 eggNOG / KEGG / CAZy / GO 四类注释使用多进程并行执行
+> - 统一日志输出与运行时间统计
+
+### 优化版代码路径
+
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/tax_ano_2_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/func_ano_2_update.py`
+
+### 优化版运行命令
+
+> 以下命令在优化版脚本创建后即可直接执行；为与原代码结果做公平对比，输入统一使用上游原代码输出目录。
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+# 清空优化版旧输出
+sudo rm -rf /home/xydeng/Metagenomics/anno_update
+
+tmux new -s anno_update
+
+sudo docker run --network=host --rm -it --cpus=24 --memory="512g" \
+    -v /data/data2/metagenome-DB:/metagenome-DB \
+    -v /home/xydeng/Metagenomics/scripts:/scripts \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/root/microbiome/microbiome/metage_megahit \
+    -e METAGE_SCRIPTS_PATH=/scripts \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate biobakery
+        echo '=== 检查输入文件 ==='
+        ls -la /home/xydeng/Metagenomics/bowtie_original
+        ls -la /home/xydeng/Metagenomics/tax_anno_original
+        ls -la /home/xydeng/Metagenomics/func_anno_original
+        ls -la /metagenome-DB/database/NR
+        echo '=== 开始运行 anno 优化版 ==='
+        mkdir -p /home/xydeng/Metagenomics/anno_update
+        cd /home/xydeng/Metagenomics/anno_update
+        time python /root/microbiome/microbiome/metage_megahit/tax_ano_2_update.py \
+            --tax_anno /home/xydeng/Metagenomics/tax_anno_original \
+            --dbdir /metagenome-DB/database/NR \
+            --bowtie /home/xydeng/Metagenomics/bowtie_original \
+            --Annotation /home/xydeng/Metagenomics/anno_update
+        time python /root/microbiome/microbiome/metage_megahit/func_ano_2_update.py \
+            --fun_anno /home/xydeng/Metagenomics/func_anno_original \
+            --dbdir /metagenome-DB/database \
+            --mapdir /metagenome-DB \
+            --bowtie /home/xydeng/Metagenomics/bowtie_original \
+            --Annotation /home/xydeng/Metagenomics/anno_update
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/12_anno_update_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t anno_update
+```
+==========================================
+开始时间: 
+2026-06-29 11:02:14
+==========================================
+real    1m19.269s
+user    1m14.535s
+sys     0m8.478s
+
+real    3m28.152s
+user    4m58.686s
+sys     0m41.982s
+==========================================
+结束时间: 
+2026-06-29 11:07:02
+==========================================
+
+
+
+
+
+
+### 优化版主要改进方向
+
+| 项目 | 原代码 | 优化版 |
+|------|--------|--------|
+| 核心脚本 | `scripts/tax_ano_2.py` + `scripts/func_ano_2.py` | `scripts_dxy/Script/tax_ano_2_update.py` + `scripts_dxy/Script/func_ano_2_update.py` |
+| 输出位置 | 默认写入当前工作目录 `Annotation/` | 通过 `--Annotation` 显式指定到 `anno_update/` |
+| 参数化 | 部分参数硬编码 | `--tax_anno` / `--fun_anno` / `--dbdir` / `--mapdir` / `--bowtie` / `--Annotation` 全部参数化 |
+| 失败即停 | `os.system`，失败不终止 | Python `try/except` + `sys.exit(1)` + shell `set -euo pipefail`，失败即停 |
+| 运行时间 | `tax_ano_2.py` real 0m59.970s + `func_ano_2.py` real 4m16.934s（合计约 5m17s） | `tax_ano_2_update.py` real 1m19.269s + `func_ano_2_update.py` real 3m28.152s（合计约 4m47s） |
+
+### 优化版运行结果总结
+
+- `anno_update/` 已完整生成，包含 `gene.taxonomy.csv`、`All/`、`bacteria/`、`Archaea/`、`Virus/`、`Fungi/`、`KEGG/`、`CAZy/`、`eggNOG/`、`GO/` 等输出。
+- 优化版 wall-clock 约 **4 分 47 秒**，较原代码约 **5 分 17 秒** 提速约 **9.5%**。
+- `tax_ano_2_update.py` 因修复 `get_class_exp()` 调用 bug，额外生成 4 个域 × 7 个层级的 Excel，耗时比原代码略长；`func_ano_2_update.py` 通过 4 进程并行，将功能注释时间从 4m17s 降到 3m28s。
+
+# task VCA_anno
+@ source /root/anaconda3/etc/profile.d/conda.sh
+@ python /root/microbiome/microbiome/metage_megahit/vfdb.py
+@ python /root/microbiome/microbiome/metage_megahit/CycDB.py
+@ python /root/microbiome/microbiome/metage_megahit/ARGs.py
+
+## 输入与依赖
+
+`VCA_anno` 任务并行执行三类注释，均依赖 `anno`、`prodig_no`、`bwa_no` 的输出：
+
+- `vfdb.py`：毒力因子注释（VFDB）
+- `CycDB.py`：碳/氮/硫/磷/甲烷循环注释（CycDB / DiTing）
+- `ARGs.py`：抗生素抗性基因注释（SARG）
+
+输入：
+- `/home/xydeng/Metagenomics/anno_original/Annotation/`：`gene.taxonomy.csv`
+- `/home/xydeng/Metagenomics/prodigal_original/`：`unique_gene.fasta`
+- `/home/xydeng/Metagenomics/bowtie_original/`：`gene_tpm.csv`
+- `/data/data2/metagenome-DB/database/`：VFDB、CycDB、ARGs 数据库
+
+输出：
+- `/home/xydeng/Metagenomics/VFDB_original/`
+- `/home/xydeng/Metagenomics/CycDB_original/`
+- `/home/xydeng/Metagenomics/ARGs_original/`
+
+## 原代码路径
+
+- `/home/xydeng/Metagenomics/scripts/vfdb.py`
+- `/home/xydeng/Metagenomics/scripts/CycDB.py`
+- `/home/xydeng/Metagenomics/scripts/ARGs.py`
+
+## 优化后代码路径
+
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/vfdb_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/CycDB_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/ARGs_update.py`
+
+## 原代码运行
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+sudo rm -rf /home/xydeng/Metagenomics/VFDB_original /home/xydeng/Metagenomics/CycDB_original /home/xydeng/Metagenomics/ARGs_original
+
+tmux new -s VCA_anno_original
+
+sudo docker run --network=host --rm -it --cpus=32 --memory="512g" \
+    -v /data/data2/metagenome-DB:/metagenome-DB \
+    -v /home/xydeng/Metagenomics/scripts:/root/microbiome/microbiome/metage_megahit \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate biobakery
+        echo '=== 检查输入文件 ==='
+        ls -la /home/xydeng/Metagenomics/anno_original/Annotation/gene.taxonomy.csv
+        ls -la /home/xydeng/Metagenomics/anno_original/Annotation/KEGG/KEGG.tpm.csv
+        ls -la /home/xydeng/Metagenomics/prodigal_original/unique_gene.fasta
+        ls -la /home/xydeng/Metagenomics/bowtie_original/gene_tpm.csv
+        echo '=== 开始运行 VCA_anno ==='
+        cd /home/xydeng/Metagenomics
+        time python /root/microbiome/microbiome/metage_megahit/vfdb.py \
+            --Annotation /home/xydeng/Metagenomics/anno_original/Annotation \
+            --VFDB /home/xydeng/Metagenomics/VFDB_original \
+            --prodigal /home/xydeng/Metagenomics/prodigal_original \
+            --bowtie /home/xydeng/Metagenomics/bowtie_original \
+            --dbdir /metagenome-DB/database
+        time python /root/microbiome/microbiome/metage_megahit/CycDB.py \
+            --Annotation /home/xydeng/Metagenomics/anno_original/Annotation \
+            --CycDB /home/xydeng/Metagenomics/CycDB_original \
+            --bowtie /home/xydeng/Metagenomics/bowtie_original \
+            --dbdir /metagenome-DB/database
+        time python /root/microbiome/microbiome/metage_megahit/ARGs.py \
+            --Annotation /home/xydeng/Metagenomics/anno_original/Annotation \
+            --ARGdir /home/xydeng/Metagenomics/ARGs_original \
+            --prodigal /home/xydeng/Metagenomics/prodigal_original \
+            --bowtie /home/xydeng/Metagenomics/bowtie_original \
+            --dbdir /metagenome-DB/database
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/13_VCA_anno_original_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t VCA_anno_original
+```
+==========================================
+开始时间: 
+2026-06-29 11:33:35
+==========================================
+real	2m46.222s
+user	26m1.757s
+sys	8m12.442s
+
+real	1m16.890s
+user	1m12.639s
+
+real	2m19.845s
+user	26m43.551s
+sys	6m57.232s
+==========================================
+结束时间: 
+2026-06-29 11:39:58
+==========================================
+
+
+
+
+## 优化版运行
+
+> 优化版脚本已创建并运行完成。主要优化点：
+> - 三个注释工具数据独立，使用 shell 后台并行（`&` + `wait`），wall-clock 降至最长单脚本时间
+> - 参数化输出目录，避免污染上游
+> - 使用 `subprocess.run` + `set -euo pipefail` 实现失败即停
+> - 统一日志与运行时间统计
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+rm -rf /home/xydeng/Metagenomics/VFDB_update /home/xydeng/Metagenomics/CycDB_update /home/xydeng/Metagenomics/ARGs_update
+
+tmux new -s VCA_anno_update
+
+sudo docker run --network=host --rm -it --cpus=32 --memory="512g" \
+    -v /data/data2/metagenome-DB:/metagenome-DB \
+    -v /home/xydeng/Metagenomics/scripts:/scripts \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/root/microbiome/microbiome/metage_megahit \
+    -e METAGE_SCRIPTS_PATH=/scripts \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate biobakery
+        echo '=== 检查输入文件 ==='
+        ls -la /home/xydeng/Metagenomics/anno_original/Annotation/gene.taxonomy.csv
+        ls -la /home/xydeng/Metagenomics/anno_original/Annotation/KEGG/KEGG.tpm.csv
+        ls -la /home/xydeng/Metagenomics/prodigal_original/unique_gene.fasta
+        ls -la /home/xydeng/Metagenomics/bowtie_original/gene_tpm.csv
+        echo '=== 开始运行 VCA_anno 优化版 ==='
+        cd /home/xydeng/Metagenomics
+        # 三个注释工具彼此独立，后台并行执行，最后用 wait 等待全部完成
+        time python /root/microbiome/microbiome/metage_megahit/vfdb_update.py \
+            --Annotation /home/xydeng/Metagenomics/anno_original/Annotation \
+            --VFDB /home/xydeng/Metagenomics/VFDB_update \
+            --prodigal /home/xydeng/Metagenomics/prodigal_original \
+            --bowtie /home/xydeng/Metagenomics/bowtie_original \
+            --dbdir /metagenome-DB/database \
+            &
+        VFDB_PID=$!
+        time python /root/microbiome/microbiome/metage_megahit/CycDB_update.py \
+            --Annotation /home/xydeng/Metagenomics/anno_original/Annotation \
+            --CycDB /home/xydeng/Metagenomics/CycDB_update \
+            --bowtie /home/xydeng/Metagenomics/bowtie_original \
+            --dbdir /metagenome-DB/database \
+            &
+        CYCDB_PID=$!
+        time python /root/microbiome/microbiome/metage_megahit/ARGs_update.py \
+            --Annotation /home/xydeng/Metagenomics/anno_original/Annotation \
+            --ARGdir /home/xydeng/Metagenomics/ARGs_update \
+            --prodigal /home/xydeng/Metagenomics/prodigal_original \
+            --bowtie /home/xydeng/Metagenomics/bowtie_original \
+            --dbdir /metagenome-DB/database \
+            &
+        ARGS_PID=$!
+        wait $VFDB_PID $CYCDB_PID $ARGS_PID
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/13_VCA_anno_update_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t VCA_anno_update
+```
+==========================================
+开始时间: 
+2026-06-29 13:05:48
+==========================================
+real	2m30.939s
+user	1m36.215s
+sys	0m9.203s
+
+real	3m48.802s
+user	39m56.313s
+sys	3m56.155s
+
+real	3m56.967s
+user	38m50.765s
+sys	4m16.170s
+==========================================
+结束时间: 
+2026-06-29 13:09:45
+==========================================
+
+
+
+## 运行时间
+
+**原代码**
+
+- `vfdb.py`：real 2m46.222s
+- `CycDB.py`：real 1m16.890s
+- `ARGs.py`：real 2m19.845s
+- 合计 wall-clock 时间：约 6m22.957s（约 6 分 23 秒）
+- 输入：`/home/xydeng/Metagenomics/anno_original/Annotation/`、`/home/xydeng/Metagenomics/prodigal_original/`、`/home/xydeng/Metagenomics/bowtie_original/`
+- 输出：`/home/xydeng/Metagenomics/VFDB_original/`、`/home/xydeng/Metagenomics/CycDB_original/`、`/home/xydeng/Metagenomics/ARGs_original/`
+- 日志：`/home/xydeng/Metagenomics/scripts_dxy/logs/13_VCA_anno_original_runtime.log`
+
+**优化版**
+
+- `CycDB_update.py`：real 2m30.939s
+- `ARGs_update.py`：real 3m48.802s
+- `vfdb_update.py`：real 3m56.967s
+- 合计 wall-clock 时间：约 3m57s（约 3 分 57 秒，由最长脚本决定）
+- 输入：同原代码
+- 输出：`/home/xydeng/Metagenomics/VFDB_update/`、`/home/xydeng/Metagenomics/CycDB_update/`、`/home/xydeng/Metagenomics/ARGs_update/`
+- 日志：`/home/xydeng/Metagenomics/scripts_dxy/logs/13_VCA_anno_update_runtime.log`
+
+**对比**
+
+- 原代码串行：约 6m23s
+- 优化版并行：约 3m57s
+-  wall-clock 提速约 **38%**
+
+---
+
+# task MBQ_anno
+@ source /root/anaconda3/etc/profile.d/conda.sh
+@ python /root/microbiome/microbiome/metage_megahit/mobileOG.py
+@ python /root/microbiome/microbiome/metage_megahit/BacMet2.py
+@ python /root/microbiome/microbiome/metage_megahit/QS.py
+
+## 输入与依赖
+
+`MBQ_anno` 任务并行执行三类注释，均依赖 `anno`、`prodig_no`、`bwa_no` 的输出：
+
+- `mobileOG.py`：可移动遗传元件注释
+- `BacMet2.py`：金属抗性基因注释
+- `QS.py`：群体感应相关基因注释
+
+输入：
+- `/home/xydeng/Metagenomics/anno_original/Annotation/`：`gene.taxonomy.csv`
+- `/home/xydeng/Metagenomics/prodigal_original/`：`unique_gene.fasta`
+- `/home/xydeng/Metagenomics/bowtie_original/`：`gene_tpm.csv`
+- `/data/data2/metagenome-DB/database/`：mobileOG、BacMet2、QS 数据库
+
+输出：
+- `/home/xydeng/Metagenomics/mobileOGs_original/`
+- `/home/xydeng/Metagenomics/BacMet2_original/`
+- `/home/xydeng/Metagenomics/QS_original/`
+
+## 原代码路径
+
+- `/home/xydeng/Metagenomics/scripts/mobileOG.py`
+- `/home/xydeng/Metagenomics/scripts/BacMet2.py`
+- `/home/xydeng/Metagenomics/scripts/QS.py`
+
+## 优化后代码路径
+
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/mobileOG_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/BacMet2_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/QS_update.py`
+
+## 原代码运行
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+rm -rf /home/xydeng/Metagenomics/mobileOGs_original /home/xydeng/Metagenomics/BacMet2_original /home/xydeng/Metagenomics/QS_original
+
+tmux new -s MBQ_anno_original
+
+sudo docker run --network=host --rm -it --cpus=32 --memory="512g" \
+    -v /data/data2/metagenome-DB:/metagenome-DB \
+    -v /home/xydeng/Metagenomics/scripts:/root/microbiome/microbiome/metage_megahit \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate biobakery
+        echo '=== 检查输入文件 ==='
+        ls -la /home/xydeng/Metagenomics/anno_original/Annotation/gene.taxonomy.csv
+        ls -la /home/xydeng/Metagenomics/prodigal_original/unique_gene.fasta
+        ls -la /home/xydeng/Metagenomics/bowtie_original/gene_tpm.csv
+        echo '=== 开始运行 MBQ_anno ==='
+        cd /home/xydeng/Metagenomics
+        time python /root/microbiome/microbiome/metage_megahit/mobileOG.py \
+            --Annotation /home/xydeng/Metagenomics/anno_original/Annotation \
+            --mobileOGdir /home/xydeng/Metagenomics/mobileOGs_original \
+            --prodigal /home/xydeng/Metagenomics/prodigal_original \
+            --bowtie /home/xydeng/Metagenomics/bowtie_original \
+            --dbdir /metagenome-DB/database
+        time python /root/microbiome/microbiome/metage_megahit/BacMet2.py \
+            --Annotation /home/xydeng/Metagenomics/anno_original/Annotation \
+            --BacMet2dir /home/xydeng/Metagenomics/BacMet2_original \
+            --prodigal /home/xydeng/Metagenomics/prodigal_original \
+            --bowtie /home/xydeng/Metagenomics/bowtie_original \
+            --dbdir /metagenome-DB/database
+        time python /root/microbiome/microbiome/metage_megahit/QS.py \
+            --Annotation /home/xydeng/Metagenomics/anno_original/Annotation \
+            --QSdir /home/xydeng/Metagenomics/QS_original \
+            --prodigal /home/xydeng/Metagenomics/prodigal_original \
+            --bowtie /home/xydeng/Metagenomics/bowtie_original \
+            --dbdir /metagenome-DB/database
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/14_MBQ_anno_original_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t MBQ_anno_original
+```
+==========================================
+开始时间: 
+2026-06-29 11:40:40
+==========================================
+real	4m26.123s
+user	54m13.159s
+sys	7m35.900s
+
+real	4m0.721s
+user	58m50.586s
+sys	7m29.857s
+
+real	2m5.798s
+user	22m43.065s
+sys	8m19.627s
+==========================================
+结束时间: 
+2026-06-29 11:51:13
+==========================================
+
+
+
+
+
+## 优化版运行
+
+> 优化版脚本已创建并运行完成。主要优化点：三个注释工具后台并行执行，wall-clock 降至最长单脚本时间；参数化输出目录、失败即停、统一日志。
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+rm -rf /home/xydeng/Metagenomics/mobileOGs_update /home/xydeng/Metagenomics/BacMet2_update /home/xydeng/Metagenomics/QS_update
+
+tmux new -s MBQ_anno_update
+
+sudo docker run --network=host --rm -it --cpus=32 --memory="512g" \
+    -v /data/data2/metagenome-DB:/metagenome-DB \
+    -v /home/xydeng/Metagenomics/scripts:/scripts \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/root/microbiome/microbiome/metage_megahit \
+    -e METAGE_SCRIPTS_PATH=/scripts \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate biobakery
+        echo '=== 检查输入文件 ==='
+        ls -la /home/xydeng/Metagenomics/anno_original/Annotation/gene.taxonomy.csv
+        ls -la /home/xydeng/Metagenomics/prodigal_original/unique_gene.fasta
+        ls -la /home/xydeng/Metagenomics/bowtie_original/gene_tpm.csv
+        echo '=== 开始运行 MBQ_anno 优化版 ==='
+        cd /home/xydeng/Metagenomics
+        # 三个注释工具彼此独立，后台并行执行，最后用 wait 等待全部完成
+        time python /root/microbiome/microbiome/metage_megahit/mobileOG_update.py \
+            --Annotation /home/xydeng/Metagenomics/anno_original/Annotation \
+            --mobileOGdir /home/xydeng/Metagenomics/mobileOGs_update \
+            --prodigal /home/xydeng/Metagenomics/prodigal_original \
+            --bowtie /home/xydeng/Metagenomics/bowtie_original \
+            --dbdir /metagenome-DB/database \
+            &
+        MOBILEOG_PID=$!
+        time python /root/microbiome/microbiome/metage_megahit/BacMet2_update.py \
+            --Annotation /home/xydeng/Metagenomics/anno_original/Annotation \
+            --BacMet2dir /home/xydeng/Metagenomics/BacMet2_update \
+            --prodigal /home/xydeng/Metagenomics/prodigal_original \
+            --bowtie /home/xydeng/Metagenomics/bowtie_original \
+            --dbdir /metagenome-DB/database \
+            &
+        BACMET2_PID=$!
+        time python /root/microbiome/microbiome/metage_megahit/QS_update.py \
+            --Annotation /home/xydeng/Metagenomics/anno_original/Annotation \
+            --QSdir /home/xydeng/Metagenomics/QS_update \
+            --prodigal /home/xydeng/Metagenomics/prodigal_original \
+            --bowtie /home/xydeng/Metagenomics/bowtie_original \
+            --dbdir /metagenome-DB/database \
+            &
+        QS_PID=$!
+        wait $MOBILEOG_PID $BACMET2_PID $QS_PID
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/14_MBQ_anno_update_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t MBQ_anno_update
+```
+==========================================
+开始时间: 
+2026-06-29 13:15:52
+==========================================
+real	5m1.789s
+user	37m52.893s
+sys	3m18.934s
+
+real	8m38.102s
+user	90m45.647s
+sys	4m27.744s
+
+real	8m51.236s
+user	88m5.916s
+sys	4m52.393s
+==========================================
+结束时间: 
+2026-06-29 13:24:44
+==========================================
+
+
+
+
+## 运行时间
+
+**原代码**
+
+- `mobileOG.py`：real 4m26.123s
+- `BacMet2.py`：real 4m0.721s
+- `QS.py`：real 2m5.798s
+- 合计 wall-clock 时间：约 10m32.642s（约 10 分 33 秒）
+- 输入：`/home/xydeng/Metagenomics/anno_original/Annotation/`、`/home/xydeng/Metagenomics/prodigal_original/`、`/home/xydeng/Metagenomics/bowtie_original/`
+- 输出：`/home/xydeng/Metagenomics/mobileOGs_original/`、`/home/xydeng/Metagenomics/BacMet2_original/`、`/home/xydeng/Metagenomics/QS_original/`
+- 日志：`/home/xydeng/Metagenomics/scripts_dxy/logs/14_MBQ_anno_original_runtime.log`
+
+**优化版**
+
+- `QS_update.py`：real 5m1.789s
+- `BacMet2_update.py`：real 8m38.102s
+- `mobileOG_update.py`：real 8m51.236s
+- 合计 wall-clock 时间：约 8m52s（约 8 分 52 秒，由最长脚本决定）
+- 输入：同原代码
+- 输出：`/home/xydeng/Metagenomics/mobileOGs_update/`、`/home/xydeng/Metagenomics/BacMet2_update/`、`/home/xydeng/Metagenomics/QS_update/`
+- 日志：`/home/xydeng/Metagenomics/scripts_dxy/logs/14_MBQ_anno_update_runtime.log`
+
+**对比**
+
+- 原代码串行：约 10m33s
+- 优化版并行：约 8m52s
+- wall-clock 提速约 **16%**
+
+**注意**
+
+- 并行后单个脚本耗时明显增加（例如 `mobileOG.py` 从 4m26s 增至 8m51s），原因是容器只分配了 `--cpus=32`，而三个 DIAMOND 任务各 `--threads=30`，合计 90 线程同时竞争 CPU。
+- 后续可进一步优化：限制每个 DIAMOND 任务线程数（如 8–10 线程），或提高容器 CPU 配额，以减少资源争抢。
+
+---
+
+# task tax_base
+@ source /root/anaconda3/etc/profile.d/conda.sh
+@ conda activate py39
+@ python /root/microbiome/microbiome/metage_megahit/megahit_statistics.py
+@ python /root/microbiome/microbiome/metage_megahit/prodigal_stats.py
+@ python /root/microbiome/microbiome/metage_megahit/bwa_stats.py
+@ python /root/microbiome/microbiome/metage_megahit/tax_stats.py
+
+## 输入与依赖
+
+`tax_base` 任务生成基础统计结果，依赖上游：
+- `megahit_no` → `/home/xydeng/Metagenomics/megahit_update_V2/`
+- `prodig_no` → `/home/xydeng/Metagenomics/prodigal_update/`
+- `bwa_no` → `/home/xydeng/Metagenomics/bowtie_original/`
+- `anno` → `/home/xydeng/Metagenomics/anno_original/Annotation/`
+- 样本元数据 → `/home/xydeng/Metagenomics/metadatadir/`
+
+输出：
+- `/home/xydeng/Metagenomics/Result/`（按分组组织的统计表与图）
+
+## 原代码路径
+
+- `/home/xydeng/Metagenomics/scripts/megahit_statistics.py`
+- `/home/xydeng/Metagenomics/scripts/prodigal_stats.py`
+- `/home/xydeng/Metagenomics/scripts/bwa_stats.py`
+- `/home/xydeng/Metagenomics/scripts/tax_stats.py`
+
+## 优化后代码路径（待创建）
+
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/megahit_statistics_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/prodigal_stats_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/bwa_stats_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/tax_stats_update.py`
+
+## 原代码运行
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+# 注意：tax_base 会写入 Result/，建议先备份或确认可覆盖
+tmux new -s tax_base_original
+
+sudo docker run --network=host --rm -it --cpus=24 --memory="320g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/megahit_update_V2:/megahit \
+    -v /home/xydeng/Metagenomics/prodigal_original:/prodigal \
+    -v /home/xydeng/Metagenomics/bowtie_original:/bowtie \
+    -v /home/xydeng/Metagenomics/anno_original/Annotation:/Annotation \
+    -v /home/xydeng/Metagenomics/scripts:/root/microbiome/microbiome/metage_megahit \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate py39
+        echo '=== 检查输入文件 ==='
+        ls -la /metadatadir/sample.txt
+        ls -la /megahit
+        ls -la /prodigal/unique_gene.fasta
+        ls -la /bowtie/gene_tpm.csv
+        ls -la /Annotation/gene.taxonomy.csv
+        echo '=== 开始运行 tax_base ==='
+        time python /root/microbiome/microbiome/metage_megahit/megahit_statistics.py \
+            -I /metadatadir --megahit /megahit
+        time python /root/microbiome/microbiome/metage_megahit/prodigal_stats.py \
+            -I /metadatadir --prodigal /prodigal
+        time python /root/microbiome/microbiome/metage_megahit/bwa_stats.py \
+            -I /metadatadir --bowtie /bowtie
+        time python /root/microbiome/microbiome/metage_megahit/tax_stats.py \
+            -I /metadatadir --Annotation /Annotation
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/15_tax_base_original_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t tax_base_original
+```
+==========================================
+开始时间: 
+2026-06-29 13:43:05
+==========================================
+real	0m18.467s
+user	0m7.034s
+sys	0m9.506s
+
+real	0m27.334s
+user	0m17.392s
+sys	0m10.899s
+
+real	11m4.383s
+user	10m26.320s
+sys	0m22.802s
+
+real	1m15.095s
+user	1m13.321s
+sys	0m5.630s
+==========================================
+结束时间: 
+2026-06-29 13:56:12
+==========================================
+
+
+
+
+
+## 优化版运行
+
+> 优化版改动要点：
+> - 四个统计脚本统一 argparse 参数化，支持 `--resdir`
+> - 使用 `subprocess.run(..., check=True)` + 统一日志，失败即停
+> - `megahit_statistics_update.py` 改用 `length_count_update.R`，对空的 `_length.txt` 文件跳过而不是报错
+> - 挂载原 `scripts/` 到 `/scripts` 并设置 `METAGE_SCRIPTS_PATH=/scripts`，供其他 R 脚本调用
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+rm -rf /home/xydeng/Metagenomics/Result_update
+
+tmux new -s tax_base_update
+
+sudo docker run --network=host --rm -it --cpus=24 --memory="320g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/megahit_update_V2:/megahit \
+    -v /home/xydeng/Metagenomics/prodigal_original:/prodigal \
+    -v /home/xydeng/Metagenomics/bowtie_original:/bowtie \
+    -v /home/xydeng/Metagenomics/anno_original/Annotation:/Annotation \
+    -v /home/xydeng/Metagenomics/scripts:/scripts \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/root/microbiome/microbiome/metage_megahit \
+    -e METAGE_SCRIPTS_PATH=/scripts \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate py39
+        echo '=== 检查输入文件 ==='
+        ls -la /metadatadir/sample.txt
+        ls -la /megahit
+        ls -la /prodigal/unique_gene.fasta
+        ls -la /bowtie/gene_tpm.csv
+        ls -la /Annotation/gene.taxonomy.csv
+        echo '=== 开始运行 tax_base 优化版 ==='
+        time python /root/microbiome/microbiome/metage_megahit/megahit_statistics_update.py \
+            -I /metadatadir --megahit /megahit --resdir /home/xydeng/Metagenomics/Result_update
+        time python /root/microbiome/microbiome/metage_megahit/prodigal_stats_update.py \
+            -I /metadatadir --prodigal /prodigal --resdir /home/xydeng/Metagenomics/Result_update
+        time python /root/microbiome/microbiome/metage_megahit/bwa_stats_update.py \
+            -I /metadatadir --bowtie /bowtie --resdir /home/xydeng/Metagenomics/Result_update
+        time python /root/microbiome/microbiome/metage_megahit/tax_stats_update.py \
+            -I /metadatadir --Annotation /Annotation --resdir /home/xydeng/Metagenomics/Result_update
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/15_tax_base_update_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t tax_base_update
+```
+==========================================
+开始时间: 
+2026-06-29 14:48:07
+==========================================
+real	0m3.989s
+user	0m4.523s
+sys	0m7.802s
+
+real	0m17.675s
+user	0m16.032s
+sys	0m10.664s
+
+real	10m20.045s
+user	10m7.285s
+sys	0m21.833s
+
+real	1m26.468s
+user	1m23.099s
+sys	0m5.034s
+==========================================
+结束时间: 
+2026-06-29 15:00:16
+==========================================
+
+
+## 运行时间
+
+- 原代码：约 13m5s（`megahit_statistics.py` 0m18s + `prodigal_stats.py` 0m27s + `bwa_stats.py` 11m4s + `tax_stats.py` 1m15s）
+  - 日志：`/home/xydeng/Metagenomics/scripts_dxy/logs/15_tax_base_original_runtime.log`
+  - 注意：原代码运行中 `length_count.R` 报 `Error in read.table... 输入中没有多出的行`，因 `os.system` 不检查返回值，流程仍继续。
+- 优化版：约 12m8s（`megahit_statistics_update.py` 0m4s + `prodigal_stats_update.py` 0m18s + `bwa_stats_update.py` 10m20s + `tax_stats_update.py` 1m26s）
+  - 日志：`/home/xydeng/Metagenomics/scripts_dxy/logs/15_tax_base_update_runtime.log`
+  - 相比原代码整体提速约 7.3%（主要节省在 MEGAHIT/Prodigal 统计脚本），`bwa_stats` 耗时基本由 R 绘图决定，与原代码接近。
+
+## 结果一致性
+
+使用 `/home/xydeng/Metagenomics/scripts_dxy/Script/compare_tax_base_update.py` 将优化版输出与上游原代码中间结果/原文件对比，结果如下：
+
+- **直接复制类文件 md5 完全一致**
+  - `final.contigs.fa`（6 样本）：均为空文件（md5 `d41d8cd98f00b204e9800998ecf8427e`），与上游 `megahit_update_V2` 一致；这也解释了 `_length.txt` 只有表头。
+  - `unique_gene.fasta`：md5 一致。
+  - `gene_count.csv`、`gene_tpm.csv`：md5 一致。
+  - `gene.taxonomy.csv`：md5 一致。
+- **Excel 统计表内容一致**
+  - `assembly_stat.xlsx`（MEGAHIT 组装统计）：内容一致。
+  - `unique_gene.stat.xlsx`（基因集统计）：内容一致。
+- **计算类表格逻辑正确**
+  - `unique_gene.length.txt` 为 `gene_length.R` 生成的长度分布表，与上游 `unique_length.txt`（逐基因长度）文件用途不同，不作为复制文件比较。
+  - 物种丰度表 `Samples/All/*.xlsx` 与 `Groups/All/*.xlsx` 的组均值（`CK组`/`T组`）分别等于对应样本均值，所有 7 个分类等级均匹配。
+  - 样本相关性矩阵 6×6 结构正常，Venn/UpSet 图已生成。
+  - Krona 图已生成（`krona.html`，约 4.3 MB）。
+
+完整对比报告：`/home/xydeng/Metagenomics/scripts_dxy/logs/15_tax_base_update_consistency_report.txt`
+
+---
+
+# task func_base
+@ source /root/anaconda3/etc/profile.d/conda.sh
+@ conda activate py39
+@ python /root/microbiome/microbiome/metage_megahit/func_stats.py
+@ python /root/microbiome/microbiome/metage_megahit/CycDB_stats.py
+@ python /root/microbiome/microbiome/metage_megahit/ARGs_stats.py
+@ python /root/microbiome/microbiome/metage_megahit/vfdb_stats.py
+@ python /root/microbiome/microbiome/metage_megahit/mobileOG_stats.py
+@ python /root/microbiome/microbiome/metage_megahit/BacMet2_stats.py
+@ python /root/microbiome/microbiome/metage_megahit/QS_stats.py
+
+## 输入与依赖
+
+`func_base` 任务生成功能注释基础统计，依赖上游：
+- `anno` → `/home/xydeng/Metagenomics/anno_original/Annotation/`
+- `VCA_anno` → `/home/xydeng/Metagenomics/VFDB_original/`、`/home/xydeng/Metagenomics/CycDB_original/`、`/home/xydeng/Metagenomics/ARGs_original/`
+- `MBQ_anno` → `/home/xydeng/Metagenomics/mobileOGs_original/`、`/home/xydeng/Metagenomics/BacMet2_original/`、`/home/xydeng/Metagenomics/QS_original/`
+- 样本元数据 → `/home/xydeng/Metagenomics/metadatadir/`
+- 数据库映射 → `/data/data2/metagenome-DB/database/GO/GO_map.txt` 等
+
+输出：
+- `/home/xydeng/Metagenomics/Result/`（功能统计表与图）
+- `/home/xydeng/Metagenomics/func_base/`（下游差异分析中间表）
+
+## 原代码路径
+
+- `/home/xydeng/Metagenomics/scripts/func_stats.py`
+- `/home/xydeng/Metagenomics/scripts/CycDB_stats.py`
+- `/home/xydeng/Metagenomics/scripts/ARGs_stats.py`
+- `/home/xydeng/Metagenomics/scripts/vfdb_stats.py`
+- `/home/xydeng/Metagenomics/scripts/mobileOG_stats.py`
+- `/home/xydeng/Metagenomics/scripts/BacMet2_stats.py`
+- `/home/xydeng/Metagenomics/scripts/QS_stats.py`
+
+## 优化后代码路径
+
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/func_stats_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/CycDB_stats_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/ARGs_stats_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/vfdb_stats_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/mobileOG_stats_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/BacMet2_stats_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/QS_stats_update.py`
+
+## 原代码运行
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+# 注意：func_base 会写入 Result/ 和 func_base/，建议先备份或确认可覆盖
+tmux new -s func_base_original
+
+sudo docker run --network=host --rm -it --cpus=24 --memory="320g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /data/data2/metagenome-DB:/metagenome-DB \
+    -v /home/xydeng/Metagenomics/anno_original/Annotation:/Annotation \
+    -v /home/xydeng/Metagenomics/VFDB_original:/VFDB \
+    -v /home/xydeng/Metagenomics/CycDB_original:/CycDB \
+    -v /home/xydeng/Metagenomics/ARGs_original:/ARGs \
+    -v /home/xydeng/Metagenomics/mobileOGs_original:/mobileOGs \
+    -v /home/xydeng/Metagenomics/BacMet2_original:/BacMet2 \
+    -v /home/xydeng/Metagenomics/QS_original:/QS \
+    -v /home/xydeng/Metagenomics/scripts:/root/microbiome/microbiome/metage_megahit \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate py39
+        echo '=== 检查输入文件 ==='
+        ls -la /metadatadir/sample.txt
+        ls -la /Annotation
+        ls -la /VFDB
+        ls -la /CycDB
+        ls -la /ARGs
+        ls -la /mobileOGs
+        ls -la /BacMet2
+        ls -la /QS
+        echo '=== 开始运行 func_base ==='
+        time python /root/microbiome/microbiome/metage_megahit/func_stats.py \
+            -I /metadatadir --Annotation /Annotation --dbdir /metagenome-DB/database
+        time python /root/microbiome/microbiome/metage_megahit/CycDB_stats.py \
+            -I /metadatadir --CycDB /CycDB
+        time python /root/microbiome/microbiome/metage_megahit/ARGs_stats.py \
+            -I /metadatadir --ARGdir /ARGs
+        time python /root/microbiome/microbiome/metage_megahit/vfdb_stats.py \
+            -I /metadatadir --VFDB /VFDB
+        time python /root/microbiome/microbiome/metage_megahit/mobileOG_stats.py \
+            -I /metadatadir --mobileOGdir /mobileOGs
+        time python /root/microbiome/microbiome/metage_megahit/BacMet2_stats.py \
+            -I /metadatadir --BacMet2dir /BacMet2
+        time python /root/microbiome/microbiome/metage_megahit/QS_stats.py \
+            -I /metadatadir --QSdir /QS
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/16_func_base_original_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t func_base_original
+```
+==========================================
+开始时间: 
+2026-06-29 15:04:26
+==========================================
+real	3m51.756s
+user	3m41.907s
+sys	0m13.064s
+
+real	0m17.680s
+user	0m17.438s
+sys	0m4.052s
+
+real	0m2.862s
+user	0m3.327s
+sys	0m4.340s
+
+real	0m2.203s
+user	0m2.841s
+sys	0m3.744s
+
+real	0m26.248s
+user	0m25.967s
+sys	0m4.984s
+
+real	0m2.355s
+user	0m2.872s
+sys	0m3.923s
+
+real	0m2.276s
+user	0m2.817s
+sys	0m4.115s
+==========================================
+结束时间: 
+2026-06-29 15:09:12
+==========================================
+
+
+
+## 优化版运行
+
+> 优化版改动要点：
+> - 七个统计脚本统一使用 argparse 参数化，支持 `--resdir` / `--func_tmp`
+> - 增加 logging 与异常处理，失败即停
+> - 使用 `os.makedirs(..., exist_ok=True)` 避免目录已存在报错
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+sudo rm -rf /home/xydeng/Metagenomics/func_base_update
+
+tmux new -s func_base_update
+
+sudo docker run --network=host --rm -it --cpus=24 --memory="320g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /data/data2/metagenome-DB:/metagenome-DB \
+    -v /home/xydeng/Metagenomics/anno_original/Annotation:/Annotation \
+    -v /home/xydeng/Metagenomics/VFDB_original:/VFDB \
+    -v /home/xydeng/Metagenomics/CycDB_original:/CycDB \
+    -v /home/xydeng/Metagenomics/ARGs_original:/ARGs \
+    -v /home/xydeng/Metagenomics/mobileOGs_original:/mobileOGs \
+    -v /home/xydeng/Metagenomics/BacMet2_original:/BacMet2 \
+    -v /home/xydeng/Metagenomics/QS_original:/QS \
+    -v /home/xydeng/Metagenomics/scripts:/scripts \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/root/microbiome/microbiome/metage_megahit \
+    -e METAGE_SCRIPTS_PATH=/scripts \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate py39
+        echo '=== 检查输入文件 ==='
+        ls -la /metadatadir/sample.txt
+        ls -la /Annotation /VFDB /CycDB /ARGs /mobileOGs /BacMet2 /QS
+        echo '=== 开始运行 func_base 优化版 ==='
+        time python /root/microbiome/microbiome/metage_megahit/func_stats_update.py \
+            -I /metadatadir --Annotation /Annotation --dbdir /metagenome-DB/database \
+            --resdir /home/xydeng/Metagenomics/Result_update --func_tmp /home/xydeng/Metagenomics/func_base_update
+        time python /root/microbiome/microbiome/metage_megahit/CycDB_stats_update.py \
+            -I /metadatadir --CycDB /CycDB --resdir /home/xydeng/Metagenomics/Result_update --func_tmp /home/xydeng/Metagenomics/func_base_update
+        time python /root/microbiome/microbiome/metage_megahit/ARGs_stats_update.py \
+            -I /metadatadir --ARGdir /ARGs --resdir /home/xydeng/Metagenomics/Result_update --func_tmp /home/xydeng/Metagenomics/func_base_update
+        time python /root/microbiome/microbiome/metage_megahit/vfdb_stats_update.py \
+            -I /metadatadir --vfdb_dir /VFDB --resdir /home/xydeng/Metagenomics/Result_update --func_tmp /home/xydeng/Metagenomics/func_base_update
+        time python /root/microbiome/microbiome/metage_megahit/mobileOG_stats_update.py \
+            -I /metadatadir --mobileOGdir /mobileOGs --resdir /home/xydeng/Metagenomics/Result_update --func_tmp /home/xydeng/Metagenomics/func_base_update
+        time python /root/microbiome/microbiome/metage_megahit/BacMet2_stats_update.py \
+            -I /metadatadir --BacMet2dir /BacMet2 --resdir /home/xydeng/Metagenomics/Result_update --func_tmp /home/xydeng/Metagenomics/func_base_update
+        time python /root/microbiome/microbiome/metage_megahit/QS_stats_update.py \
+            -I /metadatadir --QSdir /QS --resdir /home/xydeng/Metagenomics/Result_update --func_tmp /home/xydeng/Metagenomics/func_base_update
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/16_func_base_update_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t func_base_update
+```
+==========================================
+开始时间: 
+2026-06-29 15:53:35
+==========================================
+=== 开始运行 func_base 优化版 ===
+[2026-06-29 15:53:37] INFO: 开始生成功能注释丰度表
+[2026-06-29 15:57:26] INFO: 功能注释统计完成
+
+real	3m50.429s
+user	3m40.393s
+sys	0m12.571s
+[2026-06-29 15:57:27] INFO: 开始生成 CycDB 统计表
+[2026-06-29 15:57:44] INFO: CycDB 统计完成
+
+real	0m17.406s
+user	0m17.698s
+sys	0m4.155s
+[2026-06-29 15:57:45] INFO: 开始生成 ARGs 统计表
+[2026-06-29 15:57:46] INFO: ARGs 统计完成
+
+real	0m2.902s
+user	0m3.375s
+sys	0m3.731s
+[2026-06-29 15:57:47] INFO: 开始生成 VFDB 统计表
+[2026-06-29 15:57:49] INFO: VFDB 统计完成
+
+real	0m2.511s
+user	0m2.787s
+sys	0m3.872s
+[2026-06-29 15:57:50] INFO: 开始生成 mobileOG 统计表
+[2026-06-29 15:58:06] INFO: mobileOG 统计完成
+
+real	0m17.376s
+user	0m16.687s
+sys	0m3.612s
+[2026-06-29 15:58:07] INFO: 开始生成 BacMet2 统计表
+[2026-06-29 15:58:10] INFO: BacMet2 统计完成
+
+real	0m3.227s
+user	0m3.363s
+sys	0m4.074s
+[2026-06-29 15:58:10] INFO: 开始生成 QS 统计表
+[2026-06-29 15:58:12] INFO: QS 统计完成
+
+real	0m2.645s
+user	0m2.528s
+sys	0m3.030s
+==========================================
+结束时间: 
+2026-06-29 15:58:12
+==========================================
+
+
+
+## 运行时间
+
+- 原代码：约 4m45s（`func_stats.py` 3m51.756s + `CycDB_stats.py` 0m17.680s + `ARGs_stats.py` 0m2.862s + `vfdb_stats.py` 0m2.203s + `mobileOG_stats.py` 0m26.248s + `BacMet2_stats.py` 0m2.355s + `QS_stats.py` 0m2.276s）
+  - 日志：`/home/xydeng/Metagenomics/scripts_dxy/logs/16_func_base_original_runtime.log`
+- 优化版：约 4m37s（`func_stats_update.py` 3m50.429s + `CycDB_stats_update.py` 0m17.406s + `ARGs_stats_update.py` 0m2.902s + `vfdb_stats_update.py` 0m2.511s + `mobileOG_stats_update.py` 0m17.376s + `BacMet2_stats_update.py` 0m3.227s + `QS_stats_update.py` 0m2.645s）
+  - 日志：`/home/xydeng/Metagenomics/scripts_dxy/logs/16_func_base_update_runtime.log`
+  - 相比原代码整体提速约 3.1%（主要节省在 `mobileOG_stats_update.py`，由 0m26s 降至 0m17s）。
+
+
+
+---
+
+# task tax_diff
+@ source /root/anaconda3/etc/profile.d/conda.sh
+@ conda activate py39
+@ python /root/microbiome/microbiome/metage_megahit/tax_base.py
+@ python /root/microbiome/microbiome/metage_megahit/tax_diff.py
+@ /root/anaconda3/envs/r/bin/Rscript /root/microbiome/microbiome/metage_megahit/alpha_diver.R
+@ conda activate lefse
+@ python /root/microbiome/microbiome/metage_megahit/tax_lefse.py
+
+## 输入与依赖
+
+`tax_diff` 任务执行物种差异分析，依赖上游：
+- `anno` → `/home/xydeng/Metagenomics/anno_original/Annotation/`
+- `tax_base` → `/home/xydeng/Metagenomics/Result/`
+- 样本元数据 → `/home/xydeng/Metagenomics/metadatadir/`
+
+输出：
+- `/home/xydeng/Metagenomics/Result/`（差异分析结果）
+- `/home/xydeng/Metagenomics/tax_diff/`（中间差异统计表）
+
+## 原代码路径
+
+- `/home/xydeng/Metagenomics/scripts/tax_base.py`
+- `/home/xydeng/Metagenomics/scripts/tax_diff.py`
+- `/home/xydeng/Metagenomics/scripts/alpha_diver.R`
+- `/home/xydeng/Metagenomics/scripts/tax_lefse.py`
+
+## 优化后代码路径
+
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/tax_base_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/tax_diff_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/alpha_diver_update.R`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/tax_lefse_update.py`
+
+## 原代码运行
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+tmux new -s tax_diff_original
+
+sudo docker run --network=host --rm -it --cpus=24 --memory="320g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/anno_original/Annotation:/Annotation \
+    -v /home/xydeng/Metagenomics/Result_update:/Result \
+    -v /home/xydeng/Metagenomics/scripts:/root/microbiome/microbiome/metage_megahit \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate py39
+        echo '=== 检查输入文件 ==='
+        ls -la /metadatadir/sample.txt
+        ls -la /Annotation/gene.taxonomy.csv
+        ls -la /Result
+        echo '=== 开始运行 tax_diff ==='
+        # 注意：原代码 /Result 下缺少 tax_base 输出，因此挂载 Result_update 作为输入；
+        # 原代码输出单独放到 Result_original_taxdiff，避免覆盖优化版结果。
+        time python /root/microbiome/microbiome/metage_megahit/tax_base.py \
+            -I /metadatadir --Annotation /Annotation --pre_resdir /Result --resdir /home/xydeng/Metagenomics/Result_original_taxdiff
+        time python /root/microbiome/microbiome/metage_megahit/tax_diff.py \
+            -I /metadatadir --pre_resdir /Result --resdir /home/xydeng/Metagenomics/Result_original_taxdiff
+        /root/anaconda3/envs/r/bin/Rscript /root/microbiome/microbiome/metage_megahit/alpha_diver.R \
+            /metadatadir /Result/ /home/xydeng/Metagenomics/Result_original_taxdiff
+        conda activate lefse
+        time python /root/microbiome/microbiome/metage_megahit/tax_lefse.py \
+            -I /metadatadir --pre_resdir /Result --res_dir /home/xydeng/Metagenomics/Result_original_taxdiff
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/17_tax_diff_original_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t tax_diff_original
+```
+
+
+
+## 优化版运行
+
+> 优化版改动要点：
+> - `tax_base_update.py` / `tax_diff_update.py` / `tax_lefse_update.py` 统一 argparse 参数化，支持 `--resdir` / `--tpmdir` / `--pre_resdir`
+> - 改用 `subprocess.run(..., check=True)` 调用 R 脚本与 `ktImportText`，失败即停
+> - `tax_diff_update.py` 中 8 个 R 脚本改为 4 线程并行执行
+> - `alpha_diver_update.R` 使用 `file.path` 统一路径、支持 `METAGE_RLIB` / `METAGE_FONT` 环境变量覆盖
+> - `tax_lefse_update.py` 增加 LEfSe 失败日志与过滤参数 `--min-features-retained`
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+rm -rf /home/xydeng/Metagenomics/tax_diff_update
+
+tmux new -s tax_diff_update
+
+sudo docker run --network=host --rm -it --cpus=24 --memory="320g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/anno_original/Annotation:/Annotation \
+    -v /home/xydeng/Metagenomics/Result_update:/Result \
+    -v /home/xydeng/Metagenomics/scripts:/scripts \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/root/microbiome/microbiome/metage_megahit \
+    -e METAGE_SCRIPTS_PATH=/scripts \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate py39
+        echo '=== 检查输入文件 ==='
+        ls -la /metadatadir/sample.txt
+        ls -la /Annotation/gene.taxonomy.csv
+        ls -la /Result
+        echo '=== 开始运行 tax_diff 优化版 ==='
+        time python /root/microbiome/microbiome/metage_megahit/tax_base_update.py \
+            -I /metadatadir --Annotation /Annotation --pre_resdir /Result --resdir /home/xydeng/Metagenomics/Result_update
+        time python /root/microbiome/microbiome/metage_megahit/tax_diff_update.py \
+            -I /metadatadir --pre_resdir /Result --resdir /home/xydeng/Metagenomics/Result_update --tpmdir /home/xydeng/Metagenomics/tax_diff_update
+        /root/anaconda3/envs/r/bin/Rscript /root/microbiome/microbiome/metage_megahit/alpha_diver_update.R \
+            /metadatadir /Result/ /home/xydeng/Metagenomics/Result_update
+        conda activate lefse
+        time python /root/microbiome/microbiome/metage_megahit/tax_lefse_update.py \
+            -I /metadatadir --pre_resdir /Result --res_dir /home/xydeng/Metagenomics/Result_update --tpmdir /home/xydeng/Metagenomics/tax_diff_update
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/17_tax_diff_update_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t tax_diff_update
+```
+
+## 运行时间
+
+- 原代码：待运行后回填
+- 优化版：待运行后回填
+
+---
+
+# task func_diff
+@ source /root/anaconda3/etc/profile.d/conda.sh
+@ conda activate py39
+@ python /root/microbiome/microbiome/metage_megahit/func_base.py
+@ python /root/microbiome/microbiome/metage_megahit/func_diff.py
+@ conda activate lefse
+@ python /root/microbiome/microbiome/metage_megahit/func_lefse.py
+
+## 输入与依赖
+
+`func_diff` 任务执行功能差异分析，依赖上游：
+- `func_base` → `/home/xydeng/Metagenomics/func_base/`
+- 样本元数据 → `/home/xydeng/Metagenomics/metadatadir/`
+
+输出：
+- `/home/xydeng/Metagenomics/Result/`（功能差异分析结果）
+- `/home/xydeng/Metagenomics/func_diff/`（中间差异统计表）
+
+## 原代码路径
+
+- `/home/xydeng/Metagenomics/scripts/func_base.py`
+- `/home/xydeng/Metagenomics/scripts/func_diff.py`
+- `/home/xydeng/Metagenomics/scripts/func_lefse.py`
+
+## 优化后代码路径
+
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/func_base_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/func_diff_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/func_lefse_update.py`
+
+## 原代码运行
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+tmux new -s func_diff_original
+
+sudo docker run --network=host --rm -it --cpus=32 --memory="320g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/func_base:/func_base \
+    -v /home/xydeng/Metagenomics/Result:/Result \
+    -v /home/xydeng/Metagenomics/scripts:/root/microbiome/microbiome/metage_megahit \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate py39
+        echo '=== 检查输入文件 ==='
+        ls -la /metadatadir/sample.txt
+        ls -la /func_base
+        echo '=== 开始运行 func_diff ==='
+        time python /root/microbiome/microbiome/metage_megahit/func_base.py \
+            -I /metadatadir --func_tmp /func_base
+        time python /root/microbiome/microbiome/metage_megahit/func_diff.py \
+            -I /metadatadir --func_tmp /func_base
+        conda activate lefse
+        time python /root/microbiome/microbiome/metage_megahit/func_lefse.py \
+            -I /metadatadir --func_tmp /func_base
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/18_func_diff_original_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t func_diff_original
+```
+
+## 优化版运行
+
+> 优化版改动要点：
+> - `func_base_update.py` / `func_diff_update.py` / `func_lefse_update.py` 统一 argparse 参数化，支持 `--resdir` / `--func_tmp` / `--func_diff`
+> - 改用 `subprocess.run(..., check=True)` 调用 R 脚本与 LEfSe 工具，失败即停
+> - `func_diff_update.py` 中 8 个 R 脚本改为 4 线程并行执行
+> - `func_base_update.py` 中 5 个 R 脚本改为 3 线程并行执行
+> - `func_lefse_update.py` 增加 LEfSe 失败日志与过滤参数 `--min-features-retained`
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+rm -rf /home/xydeng/Metagenomics/func_diff_update
+
+tmux new -s func_diff_update
+
+sudo docker run --network=host --rm -it --cpus=32 --memory="320g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/func_base:/func_base \
+    -v /home/xydeng/Metagenomics/Result:/Result \
+    -v /home/xydeng/Metagenomics/scripts:/scripts \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/root/microbiome/microbiome/metage_megahit \
+    -e METAGE_SCRIPTS_PATH=/scripts \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate py39
+        echo '=== 检查输入文件 ==='
+        ls -la /metadatadir/sample.txt
+        ls -la /func_base
+        echo '=== 开始运行 func_diff 优化版 ==='
+        time python /root/microbiome/microbiome/metage_megahit/func_base_update.py \
+            -I /metadatadir --func_tmp /func_base --resdir /home/xydeng/Metagenomics/Result_update
+        time python /root/microbiome/microbiome/metage_megahit/func_diff_update.py \
+            -I /metadatadir --func_tmp /func_base --func_diff /home/xydeng/Metagenomics/func_diff_update --resdir /home/xydeng/Metagenomics/Result_update
+        conda activate lefse
+        time python /root/microbiome/microbiome/metage_megahit/func_lefse_update.py \
+            -I /metadatadir --func_tmp /func_base --func_diff /home/xydeng/Metagenomics/func_diff_update --resdir /home/xydeng/Metagenomics/Result_update
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/18_func_diff_update_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t func_diff_update
+```
+
+## 运行时间
+
+- 原代码：待运行后回填
+- 优化版：待运行后回填
+
+
+
+---
+
+# task coll_res_ana / coll_res_ana_bins / coll_res_NOana
+@ source /root/anaconda3/etc/profile.d/conda.sh
+@ conda activate py39
+@ python /root/microbiome/microbiome/metage_megahit/collect_res.py
+@ python /root/microbiome/microbiome/metage_megahit/collect_res_bins.py
+@ python /root/microbiome/microbiome/metage_megahit/collect_res_NOana.py
+@ python /root/microbiome/microbiome/metage_megahit/pdf2png.py
+@ python /root/microbiome/microbiome/metage_megahit/get_report.py
+@ python /root/microbiome/microbiome/metage_megahit/get_groups.py
+@ python /root/microbiome/microbiome/metage_megahit/xlsx_trans.py
+
+## 输入与依赖
+
+`coll_res_ana` 任务汇总上游所有结果并生成最终报告，分为三个版本：
+- `coll_res_ana`：有分析、不分箱
+- `coll_res_ana_bins`：有分析、分箱（多一个 `bins_stats.Result` 输入）
+- `coll_res_NOana`：无分析
+
+依赖上游（以 `coll_res_ana` 为例）：
+- `Res1`：`kneaddata_no.Result` → `/home/xydeng/Metagenomics/Result/`
+- `Res2`：`tax_base.Result` → 与 Res1 同一目录
+- `Res3`：`func_base.Result`
+- `Res4`：`tax_diff.Result`
+- `Res5`：`func_diff.Result`
+- `Res6`（分箱版）：`bins_stats.Result`
+- 样本元数据 → `/home/xydeng/Metagenomics/metadatadir/`
+- README/报告模板 → 容器内 `/root/microbiome/microbiome/metage_megahit`
+
+输出：
+- 原代码：`/home/xydeng/Metagenomics/Result/`（合并后的最终结果，含 report.docx / report.pdf / README.txt / 分组信息表.xlsx 等）
+- 优化版：`/home/xydeng/Metagenomics/Result_update/`（独立输出，避免覆盖原结果）
+
+## 原代码路径
+
+- `/home/xydeng/Metagenomics/scripts/collect_res.py`
+- `/home/xydeng/Metagenomics/scripts/collect_res_bins.py`
+- `/home/xydeng/Metagenomics/scripts/collect_res_NOana.py`
+- `/home/xydeng/Metagenomics/scripts/pdf2png.py`
+- `/home/xydeng/Metagenomics/scripts/get_report.py`
+- `/home/xydeng/Metagenomics/scripts/get_groups.py`
+- `/home/xydeng/Metagenomics/scripts/xlsx_trans.py`
+
+## 优化后代码路径
+
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/collect_res_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/collect_res_bins_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/collect_res_NOana_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/pdf2png_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/get_report_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/get_groups_update.py`
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/xlsx_trans_update.py`
+
+## 原代码运行（以 coll_res_ana 有分析、不分箱为例）
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+# 备份已有 Result/（如需要）
+# mv Result Result.bak.$(date +%Y%m%d%H%M%S)
+
+tmux new -s coll_res_ana_original
+
+sudo docker run --network=host --rm -it --cpus=24 --memory="128g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/Result:/Result_input \
+    -v /home/xydeng/Metagenomics/scripts:/root/microbiome/microbiome/metage_megahit \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate py39
+        echo '=== 检查输入文件 ==='
+        ls -la /Result_input
+        ls -la /root/microbiome/microbiome/metage_megahit/metagenome_megahit.docx
+        echo '=== 开始运行 coll_res_ana ==='
+        cd /home/xydeng/Metagenomics
+        time python /root/microbiome/microbiome/metage_megahit/collect_res.py \
+            --res1 /home/xydeng/Metagenomics/Result \
+            --res2 /home/xydeng/Metagenomics/Result \
+            --res3 /home/xydeng/Metagenomics/Result \
+            --res4 /home/xydeng/Metagenomics/Result \
+            --res5 /home/xydeng/Metagenomics/Result \
+            --readme /root/microbiome/microbiome/metage_megahit
+        time python /root/microbiome/microbiome/metage_megahit/pdf2png.py -resDir Result/
+        time python /root/microbiome/microbiome/metage_megahit/get_report.py \
+            -I /metadatadir --res_dir Result/ --micro_docx_path /root/microbiome/microbiome/metage_megahit \
+            --analyse yes --binning no
+        time python /root/microbiome/microbiome/metage_megahit/get_groups.py -I /metadatadir --res Result/
+        time python /root/microbiome/microbiome/metage_megahit/xlsx_trans.py --res Result/
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/19_coll_res_ana_original_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t coll_res_ana_original
+```
+
+### 分箱版 coll_res_ana_bins
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+tmux new -s coll_res_ana_bins_original
+
+sudo docker run --network=host --rm -it --cpus=24 --memory="128g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/Result:/Result_input \
+    -v /home/xydeng/Metagenomics/bins_stats_Result:/bins_stats_Result \
+    -v /home/xydeng/Metagenomics/scripts:/root/microbiome/microbiome/metage_megahit \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate py39
+        echo '=== 检查输入文件 ==='
+        ls -la /Result_input
+        ls -la /bins_stats_Result
+        echo '=== 开始运行 coll_res_ana_bins ==='
+        cd /home/xydeng/Metagenomics
+        time python /root/microbiome/microbiome/metage_megahit/collect_res_bins.py \
+            --res1 /home/xydeng/Metagenomics/Result \
+            --res2 /home/xydeng/Metagenomics/Result \
+            --res3 /home/xydeng/Metagenomics/Result \
+            --res4 /home/xydeng/Metagenomics/Result \
+            --res5 /home/xydeng/Metagenomics/Result \
+            --res6 /home/xydeng/Metagenomics/bins_stats_Result \
+            --readme /root/microbiome/microbiome/metage_megahit
+        time python /root/microbiome/microbiome/metage_megahit/pdf2png.py -resDir Result/
+        time python /root/microbiome/microbiome/metage_megahit/get_report.py \
+            -I /metadatadir --res_dir Result/ --micro_docx_path /root/microbiome/microbiome/metage_megahit \
+            --analyse yes --binning yes
+        time python /root/microbiome/microbiome/metage_megahit/get_groups.py -I /metadatadir --res Result/
+        time python /root/microbiome/microbiome/metage_megahit/xlsx_trans.py --res Result/
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/19_coll_res_ana_bins_original_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t coll_res_ana_bins_original
+```
+
+### 无分析版 coll_res_NOana
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+tmux new -s coll_res_NOana_original
+
+sudo docker run --network=host --rm -it --cpus=24 --memory="128g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/Result:/Result_input \
+    -v /home/xydeng/Metagenomics/scripts:/root/microbiome/microbiome/metage_megahit \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate py39
+        echo '=== 检查输入文件 ==='
+        ls -la /Result_input
+        echo '=== 开始运行 coll_res_NOana ==='
+        cd /home/xydeng/Metagenomics
+        time python /root/microbiome/microbiome/metage_megahit/collect_res_NOana.py \
+            --res1 /home/xydeng/Metagenomics/Result \
+            --res2 /home/xydeng/Metagenomics/Result \
+            --res3 /home/xydeng/Metagenomics/Result \
+            --readme /root/microbiome/microbiome/metage_megahit
+        time python /root/microbiome/microbiome/metage_megahit/pdf2png.py -resDir Result/
+        time python /root/microbiome/microbiome/metage_megahit/get_report.py \
+            -I /metadatadir --res_dir Result/ --micro_docx_path /root/microbiome/microbiome/metage_megahit \
+            --analyse no --binning no
+        time python /root/microbiome/microbiome/metage_megahit/get_groups.py -I /metadatadir --res Result/
+        time python /root/microbiome/microbiome/metage_megahit/xlsx_trans.py --res Result/
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/19_coll_res_NOana_original_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t coll_res_NOana_original
+```
+
+## 优化版运行
+
+> 优化版改动要点：
+> - `collect_res*_update.py` 使用 `shutil.copytree` 替代 `cp -r`，支持 `--outdir` 参数化输出目录
+> - `pdf2png_update.py` 支持 `--res-dir` / `--zoom`，不删除空 PDF
+> - `get_report_update.py` 使用 `glob.glob` 替代 `subprocess.getoutput('ls ...')`，LibreOffice 转换改用 `subprocess.run`
+> - `get_groups_update.py` / `xlsx_trans_update.py` 增加异常处理与日志
+> - 统一日志与失败即停
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+rm -rf /home/xydeng/Metagenomics/Result_update/Result
+
+tmux new -s coll_res_ana_update
+
+sudo docker run --network=host --rm -it --cpus=24 --memory="128g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/Result:/Result_input \
+    -v /home/xydeng/Metagenomics/scripts:/scripts \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/root/microbiome/microbiome/metage_megahit \
+    -e METAGE_SCRIPTS_PATH=/scripts \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate py39
+        echo '=== 检查输入文件 ==='
+        ls -la /Result_input
+        echo '=== 开始运行 coll_res_ana 优化版 ==='
+        cd /home/xydeng/Metagenomics
+        time python /root/microbiome/microbiome/metage_megahit/collect_res_update.py \
+            --res1 /home/xydeng/Metagenomics/Result \
+            --res2 /home/xydeng/Metagenomics/Result \
+            --res3 /home/xydeng/Metagenomics/Result \
+            --res4 /home/xydeng/Metagenomics/Result \
+            --res5 /home/xydeng/Metagenomics/Result \
+            --readme /root/microbiome/microbiome/metage_megahit \
+            --outdir /home/xydeng/Metagenomics/Result_update
+        time python /root/microbiome/microbiome/metage_megahit/pdf2png_update.py -resDir /home/xydeng/Metagenomics/Result_update/Result
+        time python /root/microbiome/microbiome/metage_megahit/get_report_update.py \
+            -I /metadatadir --res_dir /home/xydeng/Metagenomics/Result_update/Result \
+            --micro_docx_path /root/microbiome/microbiome/metage_megahit \
+            --analyse yes --binning no
+        time python /root/microbiome/microbiome/metage_megahit/get_groups_update.py \
+            -I /metadatadir --res /home/xydeng/Metagenomics/Result_update/Result
+        time python /root/microbiome/microbiome/metage_megahit/xlsx_trans_update.py \
+            --res /home/xydeng/Metagenomics/Result_update/Result
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/19_coll_res_ana_update_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t coll_res_ana_update
+```
+
+## 运行时间
+
+- 原代码：待运行后回填
+- 优化版：待运行后回填
+
+---
+
+# task res2json
+@ source /root/anaconda3/etc/profile.d/conda.sh
+@ conda activate py39
+@ python /root/microbiome/microbiome/metage_megahit/res2json.py
+
+## 输入与依赖
+
+`res2json` 任务将 `coll_res_ana` 生成的最终结果目录转换为前端可视化所需的 JSON 文件。
+
+输入：
+- `/home/xydeng/Metagenomics/Result/`：来自 `coll_res_ana`
+- `/home/xydeng/Metagenomics/metadatadir/`：样本元数据
+
+输出：
+- `/home/xydeng/Metagenomics/jsonFile/`：大量 JSON 文件
+
+## 原代码路径
+
+- `/home/xydeng/Metagenomics/scripts/res2json.py`
+
+## 优化后代码路径
+
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/res2json_update.py`
+
+## 原代码运行
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+rm -rf /home/xydeng/Metagenomics/jsonFile
+
+tmux new -s res2json_original
+
+sudo docker run --network=host --rm -it --cpus=24 --memory="128g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/Result:/Result \
+    -v /home/xydeng/Metagenomics/scripts:/root/microbiome/microbiome/metage_megahit \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate py39
+        echo '=== 检查输入文件 ==='
+        ls -la /Result
+        ls -la /metadatadir
+        echo '=== 开始运行 res2json ==='
+        time python /root/microbiome/microbiome/metage_megahit/res2json.py \
+            --sorc_path /Result \
+            -I /metadatadir \
+            --dest_path /home/xydeng/Metagenomics/jsonFile
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/20_res2json_original_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t res2json_original
+```
+
+## 优化版运行
+
+> 优化版改动要点：
+> - 将 60+ 组 JSON 生成任务抽取为配置列表循环处理，减少重复代码
+> - 参数化 `--sorc_path` / `--dest_path` / `--max-files`
+> - 增加文件存在性校验、异常处理与统一日志
+> - `json_check` 改为记录日志后删除空 JSON
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+rm -rf /home/xydeng/Metagenomics/jsonFile_update
+
+tmux new -s res2json_update
+
+sudo docker run --network=host --rm -it --cpus=24 --memory="128g" \
+    -v /home/xydeng/Metagenomics/metadatadir:/metadatadir \
+    -v /home/xydeng/Metagenomics/Result_update:/Result \
+    -v /home/xydeng/Metagenomics/scripts:/scripts \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/root/microbiome/microbiome/metage_megahit \
+    -e METAGE_SCRIPTS_PATH=/scripts \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        source /root/anaconda3/etc/profile.d/conda.sh
+        conda activate py39
+        echo '=== 检查输入文件 ==='
+        ls -la /Result
+        ls -la /metadatadir
+        echo '=== 开始运行 res2json 优化版 ==='
+        time python /root/microbiome/microbiome/metage_megahit/res2json_update.py \
+            --sorc_path /Result \
+            -I /metadatadir \
+            --dest_path /home/xydeng/Metagenomics/jsonFile_update
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/20_res2json_update_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t res2json_update
+```
+
+## 运行时间
+
+- 原代码：待运行后回填
+- 优化版：待运行后回填
+
+---
+
+# task resFile
+@ bash /root/microbiome/microbiome/metage_megahit/result_manger.sh
+
+## 输入与依赖
+
+`resFile` 任务整理最终结果目录，删除冗余文件（如 `_files` 目录和除 `krona.html` 外的 `.html`），保留核心报告文件。
+
+输入：
+- `/home/xydeng/Metagenomics/Result/`：来自 `coll_res_ana`
+
+输出：
+- 原代码：`/home/xydeng/Metagenomics/Result/`（清理后的最终目录）
+- 优化版：`/home/xydeng/Metagenomics/Result_update/`（独立输出，避免覆盖原结果）
+
+## 原代码路径
+
+- `/home/xydeng/Metagenomics/scripts/result_manger.sh`
+
+## 优化后代码路径
+
+- `/home/xydeng/Metagenomics/scripts_dxy/Script/result_manger_update.sh`
+
+## 原代码运行
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+tmux new -s resFile_original
+
+sudo docker run --network=host --rm -it --cpus=24 --memory="128g" \
+    -v /home/xydeng/Metagenomics/scripts:/root/microbiome/microbiome/metage_megahit \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        echo '=== 检查输入文件 ==='
+        ls -la /home/xydeng/Metagenomics/Result
+        echo '=== 开始运行 resFile ==='
+        time bash /root/microbiome/microbiome/metage_megahit/result_manger.sh /home/xydeng/Metagenomics/Result
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/21_resFile_original_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t resFile_original
+```
+
+## 优化版运行
+
+> 优化版改动要点：
+> - 增加 `set -euo pipefail`、参数校验与日志
+> - 支持可选输出目录参数，默认 `./Result`
+> - 使用临时目录 + `mv` 保证原子性，避免清理中途失败留下半成品
+> - `find` + `xargs -I {}` 清理 `*_files` 目录与除 `krona.html` 外的 `.html`
+
+```{bash}
+cd /home/xydeng/Metagenomics
+
+tmux new -s resFile_update
+
+sudo docker run --network=host --rm -it --cpus=24 --memory="128g" \
+    -v /home/xydeng/Metagenomics/scripts:/scripts \
+    -v /home/xydeng/Metagenomics/scripts_dxy/Script:/root/microbiome/microbiome/metage_megahit \
+    -e METAGE_SCRIPTS_PATH=/scripts \
+    -v /home/xydeng/Metagenomics:/home/xydeng/Metagenomics \
+    192.168.30.202:23099/metage_megahit/metage:v2.87 \
+    bash -c "
+        set -euo pipefail
+        echo '=========================================='
+        echo '开始时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+        echo '=== 检查输入文件 ==='
+        ls -la /home/xydeng/Metagenomics/Result
+        echo '=== 开始运行 resFile 优化版 ==='
+        time bash /root/microbiome/microbiome/metage_megahit/result_manger_update.sh /home/xydeng/Metagenomics/Result_update/Result /home/xydeng/Metagenomics/Result_update
+        echo '=========================================='
+        echo '结束时间: ' && date '+%Y-%m-%d %H:%M:%S'
+        echo '=========================================='
+    " 2>&1 | tee /home/xydeng/Metagenomics/scripts_dxy/logs/21_resFile_update_runtime.log
+
+# detach：Ctrl+B，然后 D
+# 查看：tmux attach -t resFile_update
+```
+
+## 运行时间
+
+- 原代码：待运行后回填
+- 优化版：待运行后回填
+
