@@ -13,7 +13,8 @@ if [ -z "$COMMIT_MSG" ]; then
 fi
 
 SRC="/home/xydeng/Metagenomics/scripts_dxy"
-DST="/home/xydeng/Pipeline-optimization/宏基因组"
+REPO="/home/xydeng/.cache/metagenome-sync"
+DST="$REPO/宏基因组"
 
 echo "========================================"
 echo "同步宏基因组项目到 GitHub"
@@ -39,7 +40,7 @@ rsync -a --delete "$SRC/Script/" "$DST/Script/"
 
 # 4. Git 提交
 echo "→ 提交..."
-cd /home/xydeng/Pipeline-optimization
+cd "$REPO"
 git add -A
 git commit -m "$COMMIT_MSG
 
