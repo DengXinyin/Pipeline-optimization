@@ -1,0 +1,61 @@
+Task 15 tax_base_update 一致性检查报告
+============================================================
+[PASS] final.contigs.fa (CK-1)
+  A: /home/xydeng/Metagenomics/megahit_update_V2/CK-1/final.contigs.fa
+  B: /home/xydeng/Metagenomics/Result_update/group1/2-Assembly/CK-1/final.contigs.fa
+  A md5: d41d8cd98f00b204e9800998ecf8427e
+  B md5: d41d8cd98f00b204e9800998ecf8427e
+[PASS] final.contigs.fa (CK-2)
+  A: /home/xydeng/Metagenomics/megahit_update_V2/CK-2/final.contigs.fa
+  B: /home/xydeng/Metagenomics/Result_update/group1/2-Assembly/CK-2/final.contigs.fa
+  A md5: d41d8cd98f00b204e9800998ecf8427e
+  B md5: d41d8cd98f00b204e9800998ecf8427e
+[PASS] final.contigs.fa (CK-3)
+  A: /home/xydeng/Metagenomics/megahit_update_V2/CK-3/final.contigs.fa
+  B: /home/xydeng/Metagenomics/Result_update/group1/2-Assembly/CK-3/final.contigs.fa
+  A md5: d41d8cd98f00b204e9800998ecf8427e
+  B md5: d41d8cd98f00b204e9800998ecf8427e
+[PASS] final.contigs.fa (T-1)
+  A: /home/xydeng/Metagenomics/megahit_update_V2/T-1/final.contigs.fa
+  B: /home/xydeng/Metagenomics/Result_update/group1/2-Assembly/T-1/final.contigs.fa
+  A md5: d41d8cd98f00b204e9800998ecf8427e
+  B md5: d41d8cd98f00b204e9800998ecf8427e
+[PASS] final.contigs.fa (T-2)
+  A: /home/xydeng/Metagenomics/megahit_update_V2/T-2/final.contigs.fa
+  B: /home/xydeng/Metagenomics/Result_update/group1/2-Assembly/T-2/final.contigs.fa
+  A md5: d41d8cd98f00b204e9800998ecf8427e
+  B md5: d41d8cd98f00b204e9800998ecf8427e
+[PASS] final.contigs.fa (T-3)
+  A: /home/xydeng/Metagenomics/megahit_update_V2/T-3/final.contigs.fa
+  B: /home/xydeng/Metagenomics/Result_update/group1/2-Assembly/T-3/final.contigs.fa
+  A md5: d41d8cd98f00b204e9800998ecf8427e
+  B md5: d41d8cd98f00b204e9800998ecf8427e
+[PASS] assembly_stat.xlsx: /home/xydeng/Metagenomics/megahit_update_V2/assembly_stat.xlsx vs /home/xydeng/Metagenomics/Result_update/group1/2-Assembly/assembly_stat.xlsx (1 sheets)
+[PASS] unique_gene.fasta
+  A: /home/xydeng/Metagenomics/prodigal_original/unique_gene.fasta
+  B: /home/xydeng/Metagenomics/Result_update/group1/3-GenePredict/unique_gene.fasta
+  A md5: 453da1fa4e8c8729b0f9cfb54a3c4ede
+  B md5: 453da1fa4e8c8729b0f9cfb54a3c4ede
+[PASS] unique_gene.stat.xlsx: /home/xydeng/Metagenomics/prodigal_original/unique_gene.stat.xlsx vs /home/xydeng/Metagenomics/Result_update/group1/3-GenePredict/unique_gene.stat.xlsx (1 sheets)
+[INFO] unique_gene.length.txt 为 gene_length.R 生成的长度分布表，与上游 prodigal_original/unique_length.txt（逐基因长度）用途不同，不作为复制文件比较。
+[PASS] gene_count.csv
+  A: /home/xydeng/Metagenomics/bowtie_original/gene_count.csv
+  B: /home/xydeng/Metagenomics/Result_update/group1/4-GeneAbundance/gene_count.csv
+  A md5: 87201f1e7e3a47773068bdc52f9c9ba5
+  B md5: 87201f1e7e3a47773068bdc52f9c9ba5
+[PASS] gene_tpm.csv
+  A: /home/xydeng/Metagenomics/bowtie_original/gene_tpm.csv
+  B: /home/xydeng/Metagenomics/Result_update/group1/4-GeneAbundance/gene_tpm.csv
+  A md5: 45c29d50ed488108d7aa6d70f6a1824f
+  B md5: 45c29d50ed488108d7aa6d70f6a1824f
+[INFO] sample correlation.xlsx sheets: ['Sheet 1'], shape: (6, 7)
+[INFO] upset.pdf exists: True
+[PASS] gene.taxonomy.csv
+  A: /home/xydeng/Metagenomics/anno_original/Annotation/gene.taxonomy.csv
+  B: /home/xydeng/Metagenomics/Result_update/group1/5-TaxAnnotation/1.Tables/gene.taxonomy.csv
+  A md5: efa89d1d25578697eafcd670f166517d
+  B md5: efa89d1d25578697eafcd670f166517d
+[INFO] All.taxonomy.csv：上游 anno_original/Annotation/All/All.taxonomy.csv 为逐基因表（约 104 万行），Result_update 中 Samples/All/All.taxonomy.csv 为按分类层级聚合表（约 1.3 万行），二者属于不同处理阶段，不直接比较 md5。
+[PASS] 所有 7 个分类等级的 Groups/All 均值均等于 Samples/All 对应样本均值（CK组/T组）。
+[INFO] krona.html exists: True, size: 4502344 bytes
+============================================================

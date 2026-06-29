@@ -1,0 +1,216 @@
+==========================================
+开始时间: 
+2026-06-29 13:05:48
+==========================================
+=== 检查输入文件 ===
+-rw-r--r-- 1 root root 176933378 6月  26 18:07 /home/xydeng/Metagenomics/anno_original/Annotation/gene.taxonomy.csv
+-rw-r--r-- 1 root root 327489606 6月  26 18:09 /home/xydeng/Metagenomics/anno_original/Annotation/KEGG/KEGG.tpm.csv
+-rw-r--r-- 1 root root 1564490047 6月  23 11:38 /home/xydeng/Metagenomics/prodigal_original/unique_gene.fasta
+-rw-r--r-- 1 root root 236184096 6月  23 20:00 /home/xydeng/Metagenomics/bowtie_original/gene_tpm.csv
+=== 开始运行 VCA_anno 优化版 ===
+[2026-06-29 13:05:49] INFO: 开始 ARGs diamond 比对
+[2026-06-29 13:05:49] INFO: 执行命令: diamond blastx --threads 30 --db /metagenome-DB/database/ARGs/SARG_v3.2 -e 1e-5 --query /home/xydeng/Metagenomics/prodigal_original/unique_gene.fasta --out /home/xydeng/Metagenomics/ARGs_update/ARGs_anno.txt
+diamond v2.1.8.162 (C) Max Planck Society for the Advancement of Science, Benjamin Buchfink, University of Tuebingen
+Documentation, support and updates available at http://www.diamondsearch.org
+Please cite: http://dx.doi.org/10.1038/s41592-021-01101-x Nature Methods (2021)
+
+#CPU threads: 30
+Scoring parameters: (Matrix=BLOSUM62 Lambda=0.267 K=0.041 Penalties=11/1)
+Temporary directory: /home/xydeng/Metagenomics/ARGs_update
+#Target sequences to report alignments for: 25
+Opening the database...  [0.02s]
+Database: /metagenome-DB/database/ARGs/SARG_v3.2 (type: Diamond database, sequences: 12746, letters: 5032664)
+Block size = 2000000000
+[2026-06-29 13:05:49] INFO: 开始生成 CycDB 丰度表
+[2026-06-29 13:05:49] INFO: 开始 VFDB diamond 比对
+[2026-06-29 13:05:49] INFO: 执行命令: diamond blastx --threads 30 --db /metagenome-DB/database/VFDB/version-2025-12/VFDB_setA -e 1e-5 --query /home/xydeng/Metagenomics/prodigal_original/unique_gene.fasta --out /home/xydeng/Metagenomics/VFDB_update/vf_anno.txt
+diamond v2.1.8.162 (C) Max Planck Society for the Advancement of Science, Benjamin Buchfink, University of Tuebingen
+Documentation, support and updates available at http://www.diamondsearch.org
+Please cite: http://dx.doi.org/10.1038/s41592-021-01101-x Nature Methods (2021)
+
+#CPU threads: 30
+Scoring parameters: (Matrix=BLOSUM62 Lambda=0.267 K=0.041 Penalties=11/1)
+Temporary directory: /home/xydeng/Metagenomics/VFDB_update
+#Target sequences to report alignments for: 25
+Opening the database...  [0.007s]
+Database: /metagenome-DB/database/VFDB/version-2025-12/VFDB_setA (type: Diamond database, sequences: 4460, letters: 1843397)
+Block size = 2000000000
+Algorithm: Double-indexed
+Building query histograms... Algorithm: Double-indexed
+Building query histograms...  [21.793s]
+Seeking in database...  [0s]
+Loading reference sequences...  [0.017s]
+Masking reference...  [0.055s]
+Initializing temporary storage...  [0.001s]
+Building reference histograms...  [0.045s]
+Allocating buffers...  [0s]
+Processing query block 1, reference block 1/1, shape 1/2, index chunk 1/4.
+Building reference seed array...  [0.016s]
+Building query seed array...  [18.559s]
+Seeking in database...  [0s]
+Loading reference sequences...  [0.01s]
+Masking reference...  [0.025s]
+Initializing temporary storage...  [0.001s]
+Building reference histograms...  [0.028s]
+Allocating buffers...  [0s]
+Processing query block 1, reference block 1/1, shape 1/2, index chunk 1/4.
+Building reference seed array...  [0.014s]
+Building query seed array...  [5.681s]
+Computing hash join...  [5.582s]
+Computing hash join...  [4.404s]
+Masking low complexity seeds...  [0.019s]
+Searching alignments...  [0.303s]
+Deallocating memory...  [0s]
+Processing query block 1, reference block 1/1, shape 1/2, index chunk 2/4.
+Building reference seed array...  [0.02s]
+Building query seed array...  [5.474s]
+Masking low complexity seeds...  [0.274s]
+Searching alignments...  [0.494s]
+Deallocating memory...  [0s]
+Processing query block 1, reference block 1/1, shape 1/2, index chunk 2/4.
+Building reference seed array...  [0.008s]
+Building query seed array...  [6.819s]
+Computing hash join...  [6.214s]
+Computing hash join...  [3.438s]
+Masking low complexity seeds...  [0.032s]
+Searching alignments...  [0.375s]
+Deallocating memory...  [0s]
+Processing query block 1, reference block 1/1, shape 1/2, index chunk 3/4.
+Building reference seed array...  [0.016s]
+Building query seed array...  [4.656s]
+Masking low complexity seeds...  [0.348s]
+Searching alignments...  [0.588s]
+Deallocating memory...  [0s]
+Processing query block 1, reference block 1/1, shape 1/2, index chunk 3/4.
+Building reference seed array...  [0.016s]
+Building query seed array...  [6.571s]
+Computing hash join...  [5.866s]
+Computing hash join...  [2.952s]
+Masking low complexity seeds...  [0.039s]
+Searching alignments...  [0.42s]
+Deallocating memory...  [0s]
+Processing query block 1, reference block 1/1, shape 1/2, index chunk 4/4.
+Building reference seed array...  [0.013s]
+Building query seed array...  [3.894s]
+Masking low complexity seeds...  [0.204s]
+Searching alignments...  [0.493s]
+Deallocating memory...  [0s]
+Processing query block 1, reference block 1/1, shape 1/2, index chunk 4/4.
+Building reference seed array...  [0.009s]
+Building query seed array...  [5.942s]
+Computing hash join...  [5.046s]
+Computing hash join...  [2.475s]
+Masking low complexity seeds...  [0.024s]
+Searching alignments...  [0.334s]
+Deallocating memory...  [0s]
+Processing query block 1, reference block 1/1, shape 2/2, index chunk 1/4.
+Building reference seed array...  [0.017s]
+Building query seed array...  [3.458s]
+Masking low complexity seeds...  [0.201s]
+Searching alignments...  [0.408s]
+Deallocating memory...  [0s]
+Processing query block 1, reference block 1/1, shape 2/2, index chunk 1/4.
+Building reference seed array...  [0.01s]
+Building query seed array...  [6.051s]
+Computing hash join...  [5.137s]
+Computing hash join...  [2.575s]
+Masking low complexity seeds...  [0.042s]
+Searching alignments...  [0.288s]
+Deallocating memory...  [0s]
+Processing query block 1, reference block 1/1, shape 2/2, index chunk 2/4.
+Building reference seed array...  [0.018s]
+Building query seed array...  [3.793s]
+Masking low complexity seeds... [2026-06-29 13:08:19] INFO: CycDB 注释完成，输出: /home/xydeng/Metagenomics/CycDB_update
+ [0.264s]
+Searching alignments... 
+real	2m30.939s
+user	1m36.215s
+sys	0m9.203s
+ [0.397s]
+Deallocating memory...  [0s]
+Processing query block 1, reference block 1/1, shape 2/2, index chunk 2/4.
+Building reference seed array...  [0.007s]
+Building query seed array...  [6.278s]
+Computing hash join...  [2.852s]
+Masking low complexity seeds...  [0.011s]
+Searching alignments...  [0.169s]
+Deallocating memory...  [0s]
+Processing query block 1, reference block 1/1, shape 2/2, index chunk 3/4.
+Building reference seed array...  [0.024s]
+Building query seed array...  [5.232s]
+Computing hash join...  [3.933s]
+Masking low complexity seeds...  [0.191s]
+Searching alignments...  [0.225s]
+Deallocating memory...  [0s]
+Processing query block 1, reference block 1/1, shape 2/2, index chunk 3/4.
+Building reference seed array...  [0.014s]
+Building query seed array...  [6.81s]
+Computing hash join...  [5.025s]
+Computing hash join...  [2.62s]
+Masking low complexity seeds...  [0.014s]
+Searching alignments...  [0.218s]
+Deallocating memory...  [0s]
+Processing query block 1, reference block 1/1, shape 2/2, index chunk 4/4.
+Building reference seed array...  [0.023s]
+Building query seed array...  [3.76s]
+Masking low complexity seeds...  [0.016s]
+Searching alignments...  [0.17s]
+Deallocating memory...  [0s]
+Processing query block 1, reference block 1/1, shape 2/2, index chunk 4/4.
+Building reference seed array...  [0.009s]
+Building query seed array...  [5.309s]
+Computing hash join...  [2.906s]
+Masking low complexity seeds...  [0.057s]
+Searching alignments...  [4.789s]
+Computing hash join...  [0.244s]
+Deallocating memory...  [0s]
+Deallocating buffers...  [0.749s]
+Clearing query masking...  [1.879s]
+Masking low complexity seeds...  [0.064s]
+Searching alignments...  [0.115s]
+Deallocating memory...  [0s]
+Deallocating buffers...  [0.583s]
+Clearing query masking...  [2.035s]
+Computing alignments... Loading trace points...  [0.388s]
+Sorting trace points...  [0.171s]
+Computing alignments...  [1.514s]
+Computing alignments... Loading trace points...  [0.071s]
+Sorting trace points...  [0.026s]
+Computing alignments...  [16.512s]
+Deallocating buffers...  [0.002s]
+Loading trace points...  [0s]
+ [16.627s]
+Deallocating reference...  [0s]
+Loading reference sequences...  [0.001s]
+Deallocating buffers...  [0s]
+Deallocating queries...  [0.519s]
+Total time = 195.144s
+Reported 585620 pairwise alignments, 585620 HSPs.
+168289 queries aligned.
+[2026-06-29 13:09:06] INFO: 开始生成 VFDB 丰度表
+ [19.994s]
+Deallocating buffers...  [0.004s]
+Loading trace points...  [0s]
+ [20.705s]
+Deallocating reference...  [0s]
+Loading reference sequences...  [0s]
+Deallocating buffers...  [0s]
+Deallocating queries...  [0.536s]
+Total time = 198.011s
+Reported 921575 pairwise alignments, 921575 HSPs.
+64125 queries aligned.
+[2026-06-29 13:09:10] INFO: 开始生成 ARGs 丰度表
+[2026-06-29 13:09:37] INFO: ARGs 注释完成，输出: /home/xydeng/Metagenomics/ARGs_update
+
+real	3m48.802s
+user	39m56.313s
+sys	3m56.155s
+[2026-06-29 13:09:45] INFO: VFDB 注释完成，输出: /home/xydeng/Metagenomics/VFDB_update
+
+real	3m56.967s
+user	38m50.765s
+sys	4m16.170s
+==========================================
+结束时间: 
+2026-06-29 13:09:45
+==========================================

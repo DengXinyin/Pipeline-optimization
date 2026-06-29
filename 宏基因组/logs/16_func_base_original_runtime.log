@@ -1,0 +1,96 @@
+==========================================
+开始时间: 
+2026-06-29 15:04:26
+==========================================
+=== 检查输入文件 ===
+-rw-r--r-- 1 root root 71 6月  22 12:06 /metadatadir/sample.txt
+total 172796
+drwxr-xr-x 12 root root       249 6月  29 15:00 .
+drwxr-xr-x  1 root root       215 6月  29 15:04 ..
+drwxr-xr-x  2 root root        70 6月  26 18:07 All
+drwxr-xr-x  2 root root        10 6月  26 18:07 Archaea
+drwxr-xr-x  2 root root        10 6月  26 18:07 bacteria
+drwxr-xr-x  2 root root        98 6月  26 18:09 CAZy
+drwxr-xr-x  2 root root        72 6月  26 18:09 eggNOG
+drwxr-xr-x  2 root root        10 6月  26 18:07 Fungi
+-rw-r--r--  1 root root 176933378 6月  26 18:07 gene.taxonomy.csv
+drwxr-xr-x  2 root root        32 6月  26 18:10 GO
+drwxr-xr-x  2 root root       115 6月  26 18:09 KEGG
+drwxr-xr-x  2 root root       127 6月  29 15:00 krona
+-rw-r--r--  1 root root        93 6月  29 15:00 krona.log
+-rw-r--r--  1 root root       257 6月  29 15:00 krona.sh
+drwxr-xr-x  2 root root        10 6月  26 18:07 Virus
+total 59856
+drwxr-xr-x 2 root root      115 6月  29 11:36 .
+drwxr-xr-x 1 root root      215 6月  29 15:04 ..
+-rw-r--r-- 1 root root 10916137 6月  29 11:36 gene.vf.tpm.csv
+-rw-r--r-- 1 root root 50342414 6月  29 11:35 vf_anno.txt
+-rw-r--r-- 1 root root     6888 6月  29 11:36 vf.category.tpm.xlsx
+-rw-r--r-- 1 root root    17910 6月  29 11:36 vf.tpm.xlsx
+total 4328
+drwxr-xr-x 2 root root    4096 6月  29 11:37 .
+drwxr-xr-x 1 root root     215 6月  29 15:04 ..
+-rw-r--r-- 1 root root    6088 6月  29 11:36 Carbon_Cycle_pathway.xlsx
+-rw-r--r-- 1 root root 2032790 6月  29 11:36 Carbon_Cycle.xlsx
+-rw-r--r-- 1 root root    6089 6月  29 11:37 Methane_Cycle_pathway.xlsx
+-rw-r--r-- 1 root root  196237 6月  29 11:37 Methane_Cycle.xlsx
+-rw-r--r-- 1 root root    6587 6月  29 11:37 Nitrogen_Cycle_pathway.xlsx
+-rw-r--r-- 1 root root  250886 6月  29 11:37 Nitrogen_Cycle.xlsx
+-rw-r--r-- 1 root root    6614 6月  29 11:37 phosphorylation_Cycle_pathway.xlsx
+-rw-r--r-- 1 root root 1537277 6月  29 11:37 phosphorylation_Cycle.xlsx
+-rw-r--r-- 1 root root    6511 6月  29 11:37 Sulfur_Cycle_pathway.xlsx
+-rw-r--r-- 1 root root  359444 6月  29 11:37 Sulfur_Cycle.xlsx
+total 89632
+drwxr-xr-x 2 root root       91 6月  29 11:39 .
+drwxr-xr-x 1 root root      215 6月  29 15:04 ..
+-rw-r--r-- 1 root root     8268 6月  29 11:39 ARG.Category.tpm.xlsx
+-rw-r--r-- 1 root root 80173392 6月  29 11:39 ARGs_anno.txt
+-rw-r--r-- 1 root root 11592928 6月  29 11:39 ARG.tpm.csv
+total 513808
+drwxr-xr-x 2 root root        67 6月  29 11:45 .
+drwxr-xr-x 1 root root       215 6月  29 15:04 ..
+-rw-r--r-- 1 root root 493973671 6月  29 11:43 mobileOG_anno.txt
+-rw-r--r-- 1 root root  32158980 6月  29 11:45 mobileOG.tpm.csv
+total 252832
+drwxr-xr-x 2 root root        64 6月  29 11:49 .
+drwxr-xr-x 1 root root       215 6月  29 15:04 ..
+-rw-r--r-- 1 root root  12355823 6月  29 11:49 BacMet2.tpm.csv
+-rw-r--r-- 1 root root 246540350 6月  29 11:48 BacMet_anno.txt
+total 8240
+drwxr-xr-x 2 root root      55 6月  29 11:51 .
+drwxr-xr-x 1 root root     215 6月  29 15:04 ..
+-rw-r--r-- 1 root root 3023526 6月  29 11:50 QS_anno.txt
+-rw-r--r-- 1 root root 5408562 6月  29 11:51 QS.tpm.csv
+=== 开始运行 func_base ===
+
+real	3m51.756s
+user	3m41.907s
+sys	0m13.064s
+
+real	0m17.680s
+user	0m17.438s
+sys	0m4.052s
+
+real	0m2.862s
+user	0m3.327s
+sys	0m4.340s
+
+real	0m2.203s
+user	0m2.841s
+sys	0m3.744s
+
+real	0m26.248s
+user	0m25.967s
+sys	0m4.984s
+
+real	0m2.355s
+user	0m2.872s
+sys	0m3.923s
+
+real	0m2.276s
+user	0m2.817s
+sys	0m4.115s
+==========================================
+结束时间: 
+2026-06-29 15:09:12
+==========================================

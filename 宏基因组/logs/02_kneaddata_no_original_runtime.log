@@ -1,0 +1,75 @@
+
+==========================================
+开始时间: 
+2026-06-22 11:34:53
+==========================================
+=== 检查输入文件 ===
+sample-metadata.tsv  sample.txt
+fastq 文件数: 
+12
+=== 开始运行 Kneaddata.py ===
+[?25h
+载入程辑包：‘plotly’
+
+The following object is masked from ‘package:ggplot2’:
+
+    last_plot
+
+The following object is masked from ‘package:stats’:
+
+    filter
+
+The following object is masked from ‘package:graphics’:
+
+    layout
+
+[?25h[?25h[?25h[?25hWarning message:
+[1m[22mUsing `size` aesthetic for lines was deprecated in ggplot2 3.4.0.
+[36mℹ[39m Please use `linewidth` instead. 
+[?25h[?25h[?25h[?25h[?25h
+载入程辑包：‘plotly’
+
+The following object is masked from ‘package:ggplot2’:
+
+    last_plot
+
+The following object is masked from ‘package:stats’:
+
+    filter
+
+The following object is masked from ‘package:graphics’:
+
+    layout
+
+[?25h[?25h[?25h[?25hWarning message:
+[1m[22mUsing `size` aesthetic for lines was deprecated in ggplot2 3.4.0.
+[36mℹ[39m Please use `linewidth` instead. 
+[?25h[?25h[?25h[?25h[?25h
+载入程辑包：‘plotly’
+
+The following object is masked from ‘package:ggplot2’:
+
+    last_plot
+
+The following object is masked from ‘package:stats’:
+
+    filter
+
+The following object is masked from ‘package:graphics’:
+
+    layout
+
+[?25h[?25h[?25h[?25h[?25h[?25h[?25h[?25hUsing sample_name as id variables
+Using sample_name as id variables
+Using sample_name as id variables
+Using sample_name as id variables
+Using sample_name as id variables
+Using sample_name as id variables
+[?25h[?25h
+real	23m42.492s
+user	186m45.915s
+sys	9m34.367s
+==========================================
+结束时间: 
+2026-06-22 11:58:36
+==========================================

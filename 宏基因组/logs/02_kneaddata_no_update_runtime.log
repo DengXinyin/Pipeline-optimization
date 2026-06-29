@@ -1,0 +1,79 @@
+==========================================
+开始时间: 
+2026-06-17 16:40:11
+==========================================
+sample-metadata.tsv  sample.txt
+=== 确认脚本存在 ===
+-rw-rw-r-- 1 1008 1009 3354 6月  17 16:32 /scripts/Kneaddata_update.sh
+-rw-rw-r-- 1 1008 1009 2954 6月  17 16:31 /scripts/QC_update.sh
+=== 开始运行 ===
+[INFO] [QC] bash /scripts/QC_update.sh /rawdata /metadatadir /cleandata >/cleandata/logs/QC_update.sh.log 2>&1
+[INFO] [plot_table_phase1] /root/anaconda3/envs/r/bin/Rscript /scripts/error_rate.R /cleandata/table /metadatadir /Result
+    /root/anaconda3/envs/r/bin/Rscript /scripts/atgc_content.R /cleandata/table /metadatadir /Result
+[?25h
+载入程辑包：‘plotly’
+
+The following object is masked from ‘package:ggplot2’:
+
+    last_plot
+
+The following object is masked from ‘package:stats’:
+
+    filter
+
+The following object is masked from ‘package:graphics’:
+
+    layout
+
+[?25h[?25h[?25h[?25hWarning message:
+[1m[22mUsing `size` aesthetic for lines was deprecated in ggplot2 3.4.0.
+[36mℹ[39m Please use `linewidth` instead. 
+[?25h[?25h[?25h[?25h[?25h
+载入程辑包：‘plotly’
+
+The following object is masked from ‘package:ggplot2’:
+
+    last_plot
+
+The following object is masked from ‘package:stats’:
+
+    filter
+
+The following object is masked from ‘package:graphics’:
+
+    layout
+
+[?25h[?25h[?25h[?25hWarning message:
+[1m[22mUsing `size` aesthetic for lines was deprecated in ggplot2 3.4.0.
+[36mℹ[39m Please use `linewidth` instead. 
+[?25h[?25h[INFO] [plot_table_phase2] /root/anaconda3/envs/r/bin/Rscript /scripts/data_composition_bar.R /cleandata/table /metadatadir /Result none
+[?25h[?25h[?25h
+载入程辑包：‘plotly’
+
+The following object is masked from ‘package:ggplot2’:
+
+    last_plot
+
+The following object is masked from ‘package:stats’:
+
+    filter
+
+The following object is masked from ‘package:graphics’:
+
+    layout
+
+[?25h[?25h[?25h[?25h[?25h[?25h[?25h[?25hUsing sample_name as id variables
+Using sample_name as id variables
+Using sample_name as id variables
+Using sample_name as id variables
+Using sample_name as id variables
+Using sample_name as id variables
+[?25h[?25h[INFO] All steps completed successfully.
+
+real	9m21.993s
+user	203m27.834s
+sys	    12m20.971s
+==========================================
+结束时间: 
+2026-06-17 16:49:33
+==========================================

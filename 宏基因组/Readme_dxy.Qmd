@@ -3971,7 +3971,10 @@ sudo docker run --network=host --rm -it --cpus=24 --memory="320g" \
             -I /metadatadir --pre_resdir /Result --resdir /home/xydeng/Metagenomics/Result_original_taxdiff
         /root/anaconda3/envs/r/bin/Rscript /root/microbiome/microbiome/metage_megahit/alpha_diver.R \
             /metadatadir /Result/ /home/xydeng/Metagenomics/Result_original_taxdiff
+        # lefse 环境的 activate 脚本在 set -u 下会触发 ADDR2LINE 未绑定变量错误
+        set +u
         conda activate lefse
+        set -u
         time python /root/microbiome/microbiome/metage_megahit/tax_lefse.py \
             -I /metadatadir --pre_resdir /Result --res_dir /home/xydeng/Metagenomics/Result_original_taxdiff
         echo '=========================================='
@@ -4028,7 +4031,10 @@ sudo docker run --network=host --rm -it --cpus=24 --memory="320g" \
             -I /metadatadir --pre_resdir /Result --resdir /home/xydeng/Metagenomics/Result_update --tpmdir /home/xydeng/Metagenomics/tax_diff_update
         /root/anaconda3/envs/r/bin/Rscript /root/microbiome/microbiome/metage_megahit/alpha_diver_update.R \
             /metadatadir /Result/ /home/xydeng/Metagenomics/Result_update
+        # lefse 环境的 activate 脚本在 set -u 下会触发 ADDR2LINE 未绑定变量错误
+        set +u
         conda activate lefse
+        set -u
         time python /root/microbiome/microbiome/metage_megahit/tax_lefse_update.py \
             -I /metadatadir --pre_resdir /Result --res_dir /home/xydeng/Metagenomics/Result_update --tpmdir /home/xydeng/Metagenomics/tax_diff_update
         echo '=========================================='
@@ -4106,7 +4112,10 @@ sudo docker run --network=host --rm -it --cpus=32 --memory="320g" \
             -I /metadatadir --func_tmp /func_base
         time python /root/microbiome/microbiome/metage_megahit/func_diff.py \
             -I /metadatadir --func_tmp /func_base
+        # lefse 环境的 activate 脚本在 set -u 下会触发 ADDR2LINE 未绑定变量错误
+        set +u
         conda activate lefse
+        set -u
         time python /root/microbiome/microbiome/metage_megahit/func_lefse.py \
             -I /metadatadir --func_tmp /func_base
         echo '=========================================='
@@ -4158,7 +4167,10 @@ sudo docker run --network=host --rm -it --cpus=32 --memory="320g" \
             -I /metadatadir --func_tmp /func_base --resdir /home/xydeng/Metagenomics/Result_update
         time python /root/microbiome/microbiome/metage_megahit/func_diff_update.py \
             -I /metadatadir --func_tmp /func_base --func_diff /home/xydeng/Metagenomics/func_diff_update --resdir /home/xydeng/Metagenomics/Result_update
+        # lefse 环境的 activate 脚本在 set -u 下会触发 ADDR2LINE 未绑定变量错误
+        set +u
         conda activate lefse
+        set -u
         time python /root/microbiome/microbiome/metage_megahit/func_lefse_update.py \
             -I /metadatadir --func_tmp /func_base --func_diff /home/xydeng/Metagenomics/func_diff_update --resdir /home/xydeng/Metagenomics/Result_update
         echo '=========================================='
