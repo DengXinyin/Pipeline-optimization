@@ -1,0 +1,19 @@
+{
+  "metage_v2_88_2.project_root": "/cephfs_data/genostack_v3/genostack_php/project_data/21507/",
+  "metage_v2_88_2.datapath": "/cephfs_data/genostack_v3/genostack_php/project_data/21507/data/",
+  "metage_v2_88_2.rawdatapath": "/cephfs_data/genostack_v3/genostack_php/project_data/21499/SNDF042726061801_testdata/testdata",
+  "metage_v2_88_2.mapdir": "/public/nfs_data/public_file_data/metagenome-DB",
+  "metage_v2_88_2.run_mode": "incremental",
+  "metage_v2_88_2.parent_workflow_dir": "<PARENT_WORKFLOW_UUID>",
+  "metage_v2_88_2.host": "none",
+  "metage_v2_88_2.binning": "no",
+  "metage_v2_88_2.use_kraken2": "no",
+  "metage_v2_88_2.plot_global_font_family": "Times_New_Roman",
+  "metage_v2_88_2.plot_title_font_family": "Times_New_Roman",
+  "metage_v2_88_2.plot_title_size": "24",
+  "metage_v2_88_2.plot_legend_title_font_family": "Times_New_Roman",
+  "metage_v2_88_2.plot_legend_title_size": "20",
+  "metage_v2_88_2.plot_legend_text_font_family": "Times_New_Roman",
+  "metage_v2_88_2.plot_legend_text_size": "18",
+  "metage_v2_88_2.plot_legend_position": "right"
+}

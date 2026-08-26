@@ -1,0 +1,110 @@
+{
+  "global": {
+    "font_family": "Times New Roman",
+    "theme": "bw",
+    "dpi": 300,
+    "figure_width": 10,
+    "figure_height": 8
+  },
+  "text": {
+    "title": {
+      "font_family": "",
+      "size": 24,
+      "bold": true,
+      "italic": false,
+      "align": "center",
+      "show": true
+    },
+    "subtitle": {
+      "font_family": "",
+      "size": 20,
+      "bold": false,
+      "italic": false,
+      "align": "center",
+      "show": true
+    },
+    "axis_title": {
+      "font_family": "",
+      "size": 20,
+      "bold": false,
+      "italic": false,
+      "align": "center",
+      "show": true
+    },
+    "axis_text": {
+      "font_family": "",
+      "size": 18,
+      "bold": false,
+      "italic": false,
+      "align": "center",
+      "show": true
+    },
+    "legend_title": {
+      "font_family": "",
+      "size": 20,
+      "bold": false,
+      "italic": false,
+      "align": "left",
+      "show": true
+    },
+    "legend_text": {
+      "font_family": "",
+      "size": 18,
+      "bold": false,
+      "italic": false,
+      "align": "left",
+      "show": true
+    },
+    "data_label": {
+      "font_family": "",
+      "size": 16,
+      "bold": false,
+      "italic": false,
+      "align": "center",
+      "show": true
+    },
+    "facet_label": {
+      "font_family": "",
+      "size": 18,
+      "bold": true,
+      "italic": false,
+      "align": "center",
+      "show": true
+    }
+  },
+  "legend": {
+    "show": true,
+    "position": "right",
+    "frame": false
+  },
+  "group_palette": [
+    "#4472C4",
+    "#ED7D31",
+    "#70AD47",
+    "#A5A5A5",
+    "#FFC000",
+    "#5B9BD5",
+    "#C55A11",
+    "#8064A2",
+    "#2F5597",
+    "#A9D18E",
+    "#F4B183",
+    "#9E480E"
+  ],
+  "tasks": {
+    "qc": {
+      "text": {
+        "title": {
+          "show": false
+        }
+      }
+    },
+    "alpha_diversity": {
+      "text": {
+        "title": {
+          "size": 20
+        }
+      }
+    }
+  }
+}

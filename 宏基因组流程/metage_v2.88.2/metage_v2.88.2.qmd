@@ -1,0 +1,50 @@
+---
+title: "宏基因组流程 metage_v2.88.2 使用说明"
+author: "协作草稿"
+date: "2026-08-07"
+format:
+  html:
+    toc: true
+    number-sections: true
+  docx: default
+  pdf:
+    toc: true
+---
+
+
+
+v2.88.2 已构建、完成镜像内增量回归并推送。以下命令用于复现构建与验证：
+```{bash}
+sudo docker login dockerhub.genostack.com
+
+sudo docker build -f Dockerfile \
+  -t dockerhub.genostack.com/sanshu/metage:v2.88.2 .
+
+# 验证镜像：
+sudo docker image inspect \
+  dockerhub.genostack.com/sanshu/metage:v2.88.2 \
+  --format 'ID={{.Id}} Created={{.Created}} Digests={{json .RepoDigests}}'
+
+# 再检查脚本和字体：
+sudo docker run --rm \
+  dockerhub.genostack.com/sanshu/metage:v2.88.2 \
+  bash -lc '
+    test -f /root/microbiome/microbiome/metage_v2.88.2/dealdata_update.py
+    test -f /root/microbiome/microbiome/metage_v2.88.2/choose_plot_style.py
+    test -f /root/microbiome/microbiome/metage_v2.88.2/plot_theme_update.R
+    conda run -n py39 python -c "import Bio, matplotlib, numpy, openpyxl, pandas"
+    fc-match "Times New Roman"
+    fc-match "Arial"
+    fc-match "SimSun"
+    echo "v2.88.2 verification passed"
+  '
+
+sudo docker push dockerhub.genostack.com/sanshu/metage:v2.88.2
+
+```
+
+本次正式生产镜像已固定为：
+
+```text
+dockerhub.genostack.com/sanshu/metage@sha256:5264730802751d591f1a6f25878597377778493d3a396b5ee324475004e60adf
+```

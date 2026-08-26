@@ -1,0 +1,12 @@
+VERSION=v2.88.2
+NAME=metage_v2.88.2
+ARCHIVE_DATE=2026-08-07
+WDL=metage_v2.88.2.wdl
+IMAGE=dockerhub.genostack.com/sanshu/metage:v2.88.2
+BASE_IMAGE_DIGEST=sha256:18bd9eff6f0cd3b2643ddc2981e5a602a27c16ea1d481869558bc7fdaf0f83cb
+SOURCE=/home/xydeng/Metagenomics_Docker/metage_v2.87_dxy_test_20260724
+IMAGE_STATUS=built_tested_pushed
+IMAGE_DIGEST=sha256:6bfb5f0fc04519832c5b95c578963970141a152942d10156d5dd4c7f4ee080e3
+IMAGE_ID=sha256:72f6e2e223c4815c929959e5a9df20f6ba87ac2a52d21683b5844ff903831181
+RELEASE_DATE=2026-08-13
+INCREMENTAL_STRATEGY=batch_catalog_union_v3
