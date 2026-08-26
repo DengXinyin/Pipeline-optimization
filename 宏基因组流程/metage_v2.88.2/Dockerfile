@@ -12,35 +12,25 @@ ENV METAGE_SCRIPTS_PATH=/root/microbiome/microbiome/metage_v2.88.2 \
     METAGE_PLOT_FONT="Times New Roman"
 
 # Optional Kraken2/Bracken taxonomy branch used when use_kraken2=yes.
-# The compact environment is vendored so builds do not depend on external
-# Conda channels. The Kraken2 database remains external on Ceph.
-COPY vendor/kraken2/ /root/anaconda3/envs/kraken2/
-
-RUN source /root/anaconda3/etc/profile.d/conda.sh && \
+# The executable environment is installed at image-build time; the database
+# remains external on Ceph and no packaged Kraken2 binaries are kept in Git.
+RUN /root/anaconda3/bin/conda create -y -n kraken2 -c conda-forge -c bioconda \
+      kraken2 bracken && \
+    source /root/anaconda3/etc/profile.d/conda.sh && \
     conda activate kraken2 && \
     kraken2 --version && \
     bracken -v && \
     bracken-build -v
 
-# Install the licensed Times New Roman and Arial font families explicitly.
-# SimSun/NSimSun remain inherited from the v2.88 base image.
-COPY fonts/msttcore/ /usr/share/fonts/msttcore/
-
 # Keep this path unchanged: the WDL and helper scripts call files here.
 COPY scripts/ /root/microbiome/microbiome/metage_v2.88.2/
 
-RUN chmod 0644 /usr/share/fonts/msttcore/* && \
-    chmod -R a+rX /root/microbiome/microbiome/metage_v2.88.2 && \
+RUN chmod -R a+rX /root/microbiome/microbiome/metage_v2.88.2 && \
     find /root/microbiome/microbiome/metage_v2.88.2 \
       -type f -name "*.sh" -exec chmod 0755 {} \; && \
     rm -rf /root/.cache/matplotlib && \
     fc-cache -f -v >/tmp/fc-cache.log && \
-    fc-list | grep -qi "Times New Roman" && \
-    fc-list | grep -qi "Arial" && \
-    fc-list | grep -qi "SimSun" && \
-    fc-match "Times New Roman" | grep -qi "times" && \
-    fc-match "Arial" | grep -qi "arial" && \
-    fc-match "SimSun" | grep -qi "simsun" && \
+    fc-match "sans-serif" >/dev/null && \
     test -f "${METAGE_SCRIPTS_PATH}/get_report_update.py" && \
     test -f "${METAGE_SCRIPTS_PATH}/merge_upstream_results.py" && \
     test -f "${METAGE_SCRIPTS_PATH}/test_incremental_merge.py" && \

@@ -1,6 +1,6 @@
 # metage v2.88.2 去宿主 WDL
 
-`metage_v2.88.2_dehost.wdl` 是从 `metage_v2.88.2.wdl` 派生的独立去宿主版本；原 WDL 未修改。
+`node1_test_bundle_v2.88.2/workflow/metage_v2.88.2_dehost.wdl` 是从同目录普通 WDL 派生的独立去宿主版本；普通 WDL 未修改。
 
 ## 使用方式
 
@@ -9,7 +9,7 @@
 - 自定义宿主：`host = "<name>"`
 - 本版本禁止 `host = "none"`
 
-默认值为 `human`。完整运行示例见 `examples/inputs.dehost.full.example.json`。
+默认值为 `human`。本地测试输入统一放在 `node1_test_bundle_v2.88.2/inputs/`。
 
 ## 宿主索引目录
 

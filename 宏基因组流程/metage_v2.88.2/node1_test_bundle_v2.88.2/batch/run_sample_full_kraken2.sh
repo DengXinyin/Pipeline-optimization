@@ -1,8 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-INPUTS_FILE="${PROJECT_DIR}/inputs_isbwa_yes_kraken2.json"
+BATCH_DIR="$(cd "$(dirname "$0")" && pwd)"
+BUNDLE_DIR="$(cd "${BATCH_DIR}/.." && pwd)"
+INPUTS_FILE="${BUNDLE_DIR}/inputs/inputs.node1.full.kraken2.json"
 KRAKEN2_DB="/cephfs_data/genostack_v3/genostack_php/public_file_data/metagenome-DB/kraken2/minikraken2_v2_8GB_201904_UPDATE"
 
 RUN_ARGS=()
@@ -26,5 +27,5 @@ done
 
 echo "[运行模式] full + Kraken2/Bracken"
 echo "[Kraken2数据库] ${KRAKEN2_DB}"
-exec bash "${PROJECT_DIR}/run_workflow.sh" full \
+exec bash "${BATCH_DIR}/run_workflow.sh" full \
     --inputs "${INPUTS_FILE}" "${RUN_ARGS[@]}"

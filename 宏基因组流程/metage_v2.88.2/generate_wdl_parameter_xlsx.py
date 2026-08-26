@@ -13,7 +13,7 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 
 
 ROOT = Path(__file__).resolve().parent
-WDL_PATH = ROOT / "metage_v2.88.2.wdl"
+WDL_PATH = ROOT / "node1_test_bundle_v2.88.2" / "workflow" / "metage_v2.88.2.wdl"
 OUT_PATH = ROOT / "metage_v2.88.2_WDL参数说明.xlsx"
 WORKFLOW = "metage_v2_88_2"
 

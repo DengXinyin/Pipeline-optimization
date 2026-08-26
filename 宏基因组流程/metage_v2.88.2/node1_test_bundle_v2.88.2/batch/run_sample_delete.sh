@@ -1,8 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-INPUTS_NAME="examples/inputs.reuse.example.json"
+BATCH_DIR="$(cd "$(dirname "$0")" && pwd)"
+BUNDLE_DIR="$(cd "${BATCH_DIR}/.." && pwd)"
+PROJECT_DIR="$(cd "${BUNDLE_DIR}/../.." && pwd)"
+INPUTS_NAME="inputs/inputs.node1.reuse.json"
 DELETE_IDS=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -27,8 +29,8 @@ done
 }
 case "$INPUTS_NAME" in
     /*) INPUTS_FILE="$INPUTS_NAME" ;;
-    *) INPUTS_FILE="${PROJECT_DIR}/${INPUTS_NAME}" ;;
+    *) INPUTS_FILE="${BUNDLE_DIR}/${INPUTS_NAME}" ;;
 esac
 python3 "${PROJECT_DIR}/scripts/edit_sample_sheet.py" \
     --inputs "$INPUTS_FILE" --delete "${DELETE_IDS[@]}"
-exec bash "${PROJECT_DIR}/run_workflow.sh" delete --inputs "$INPUTS_FILE"
+exec bash "${BATCH_DIR}/run_workflow.sh" delete --inputs "$INPUTS_FILE"

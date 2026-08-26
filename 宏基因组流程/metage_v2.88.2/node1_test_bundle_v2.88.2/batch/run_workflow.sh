@@ -16,7 +16,7 @@ case "${REQUESTED_MODE}" in
 esac
 
 ORIGINAL_ARGS=("${REQUESTED_MODE}" "$@")
-INPUTS_NAME="inputs_isbwa_yes.json"
+INPUTS_NAME="inputs/inputs.node1.full.json"
 CLEAN_RUNS=false
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -47,7 +47,9 @@ if [ "${EUID}" -ne 0 ] && ! docker info >/dev/null 2>&1; then
     exec sudo /bin/bash "$0" "${ORIGINAL_ARGS[@]}"
 fi
 
-PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BATCH_DIR="$(cd "$(dirname "$0")" && pwd)"
+BUNDLE_DIR="$(cd "${BATCH_DIR}/.." && pwd)"
+PROJECT_DIR="$(cd "${BUNDLE_DIR}/../.." && pwd)"
 
 # 文件型 HSQLDB 只允许一个 Cromwell 进程写入。持有此文件描述符直到
 # run_workflow.sh 退出，避免重复运行脚本造成数据库锁或恢复冲突。
@@ -61,7 +63,7 @@ fi
 
 case "${INPUTS_NAME}" in
     /*) INPUTS_FILE="${INPUTS_NAME}" ;;
-    *) INPUTS_FILE="${PROJECT_DIR}/${INPUTS_NAME}" ;;
+    *) INPUTS_FILE="${BUNDLE_DIR}/${INPUTS_NAME}" ;;
 esac
 [ -f "${INPUTS_FILE}" ] || { echo "Inputs file not found: ${INPUTS_FILE}" >&2; exit 2; }
 
@@ -96,9 +98,9 @@ done
 
 CROMWELL_JAR="/home/xydeng/Metagenomics_Docker/cromwell-85.jar"
 JAVA_BIN="/home/software/Software/Java/v20.0.1/bin/java"
-CONFIG_FILE="${PROJECT_DIR}/cromwell_config.conf"
-OPTIONS_FILE="${PROJECT_DIR}/options.json"
-WDL_FILE="${PROJECT_DIR}/metage_v2.88.2.wdl"
+CONFIG_FILE="${BUNDLE_DIR}/config/cromwell_config.conf"
+OPTIONS_FILE="${BUNDLE_DIR}/config/options.json"
+WDL_FILE="${BUNDLE_DIR}/workflow/metage_v2.88.2.wdl"
 WORKFLOW_ROOT="/cephfs_data/genostack_v3/genostack_cromwell/cromwell-executions/metage_v2_88_2"
 REGISTRY_DIR="${WORKFLOW_ROOT}/registry"
 
