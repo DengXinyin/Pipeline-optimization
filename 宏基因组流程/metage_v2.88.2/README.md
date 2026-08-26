@@ -43,4 +43,4 @@ bash run_sample_multi_change.sh --inputs ../inputs/inputs.node1.incremental.json
 
 ## 镜像构建
 
-Kraken2/Bracken 在镜像构建阶段通过 Conda 安装，Kraken2 数据库仍使用 Ceph 上的外部数据库路径；仓库不再保存其二进制环境或字体文件。
+Kraken2 数据库在运行前单独下载并挂载到计算环境可访问的外部路径；镜像构建和仓库均不携带 Kraken2 数据库或二进制环境。字体文件也不再随仓库保存。

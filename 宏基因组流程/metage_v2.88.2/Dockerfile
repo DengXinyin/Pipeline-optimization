@@ -11,16 +11,8 @@ USER root
 ENV METAGE_SCRIPTS_PATH=/root/microbiome/microbiome/metage_v2.88.2 \
     METAGE_PLOT_FONT="Times New Roman"
 
-# Optional Kraken2/Bracken taxonomy branch used when use_kraken2=yes.
-# The executable environment is installed at image-build time; the database
-# remains external on Ceph and no packaged Kraken2 binaries are kept in Git.
-RUN /root/anaconda3/bin/conda create -y -n kraken2 -c conda-forge -c bioconda \
-      kraken2 bracken && \
-    source /root/anaconda3/etc/profile.d/conda.sh && \
-    conda activate kraken2 && \
-    kraken2 --version && \
-    bracken -v && \
-    bracken-build -v
+# Kraken2 数据库由运行环境单独下载并挂载；本镜像构建不携带数据库，
+# 也不在此处安装 Kraken2/Bracken 软件。
 
 # Keep this path unchanged: the WDL and helper scripts call files here.
 COPY scripts/ /root/microbiome/microbiome/metage_v2.88.2/
