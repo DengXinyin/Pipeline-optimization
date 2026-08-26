@@ -39,6 +39,37 @@ def merge_dir(src, dst):
     log.info('合并 %s -> %s', src, dst)
 
 
+def collect_kraken2(outdir, raw_dir=None, tax_base_dir=None, tax_diff_dir=None):
+    """Add optional Kraken2 outputs to the delivered result directory."""
+    sources = [
+        ('1-Raw_annotation', raw_dir),
+        ('2-Taxonomy_statistics', tax_base_dir),
+        ('3-Differential_analysis', tax_diff_dir),
+    ]
+    sources = [(label, path) for label, path in sources if path]
+    if not sources:
+        return
+
+    kraken_dir = os.path.join(outdir, 'Result', '17-Kraken2')
+    manifest_rows = []
+    for label, src in sources:
+        if not os.path.isdir(src):
+            raise FileNotFoundError(f'Kraken2 源目录不存在: {src}')
+        dst = os.path.join(kraken_dir, label)
+        merge_dir(src, dst)
+        for root, _, files in os.walk(dst):
+            for filename in sorted(files):
+                path = os.path.join(root, filename)
+                manifest_rows.append((label, os.path.relpath(path, kraken_dir), os.path.getsize(path)))
+
+    manifest = os.path.join(kraken_dir, 'Kraken2_result_manifest.tsv')
+    with open(manifest, 'w', encoding='utf-8') as handle:
+        handle.write('result_category\trelative_path\tsize_bytes\n')
+        for row in manifest_rows:
+            handle.write('\t'.join(map(str, row)) + '\n')
+    log.info('已汇总 Kraken2 结果: %s（%d 个文件）', kraken_dir, len(manifest_rows))
+
+
 def main():
     parser = argparse.ArgumentParser(description='Collect analysis results (update version)')
     parser.add_argument('--res1', type=str, required=True, help='result directory 1 (e.g. Result)')
@@ -46,6 +77,9 @@ def main():
     parser.add_argument('--res3', type=str, required=True, help='result directory 3 (e.g. func_base)')
     parser.add_argument('--res4', type=str, required=True, help='result directory 4 (e.g. tax_diff)')
     parser.add_argument('--res5', type=str, required=True, help='result directory 5 (e.g. func_diff)')
+    parser.add_argument('--kraken2-anno', type=str, default=None, help='optional Kraken2 raw annotation directory')
+    parser.add_argument('--kraken2-tax-base', type=str, default=None, help='optional Kraken2 taxonomy statistics directory')
+    parser.add_argument('--kraken2-tax-diff', type=str, default=None, help='optional Kraken2 differential analysis directory')
     parser.add_argument('--readme', type=str, required=True, help='directory containing README.txt')
     parser.add_argument('--outdir', type=str, default='Result_update', help='output parent directory')
     args = parser.parse_args()
@@ -62,6 +96,8 @@ def main():
         seen.add(src)
         dst = os.path.join(outdir, os.path.basename(src))
         merge_dir(src, dst)
+
+    collect_kraken2(outdir, args.kraken2_anno, args.kraken2_tax_base, args.kraken2_tax_diff)
 
     readme_src = os.path.join(os.path.abspath(args.readme), 'README.txt')
     readme_dst = os.path.join(outdir, 'Result', 'README.txt')

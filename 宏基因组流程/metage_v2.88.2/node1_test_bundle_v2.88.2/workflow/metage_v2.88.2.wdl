@@ -508,6 +508,9 @@ workflow metage_v2_88_2 {
                     Res4=tax_diff.Result,
                     Res5=func_diff.Result,
                     Res6=select_first([bins_stats.Result,deal_parameter.bins_stats_dir]),
+                    kraken2_anno_dir=kraken2_anno.kraken2_out,
+                    kraken2_tax_base_dir=kraken2_tax_base.Result,
+                    kraken2_tax_diff_dir=kraken2_tax_diff.Result,
                     display_name_map=apply_registry.display_name_map,
                     host=host,
                     qc_cleandir=select_first([merge_upstream_results.clean_dir, kneaddata_no.cleandir, deal_parameter.clean_dir]),
@@ -524,6 +527,9 @@ workflow metage_v2_88_2 {
                     Res3=func_base.Result,
                     Res4=tax_diff.Result,
                     Res5=func_diff.Result,
+                    kraken2_anno_dir=kraken2_anno.kraken2_out,
+                    kraken2_tax_base_dir=kraken2_tax_base.Result,
+                    kraken2_tax_diff_dir=kraken2_tax_diff.Result,
                     display_name_map=apply_registry.display_name_map,
                     host=host,
                     qc_cleandir=select_first([merge_upstream_results.clean_dir, kneaddata_no.cleandir, deal_parameter.clean_dir]),
@@ -1868,6 +1874,9 @@ task coll_res_ana {
     File Res4
     File Res5
     File? display_name_map
+    File? kraken2_anno_dir
+    File? kraken2_tax_base_dir
+    File? kraken2_tax_diff_dir
     String host
     File? qc_cleandir
     File plot_style
@@ -1883,10 +1892,17 @@ task coll_res_ana {
         export R_PROFILE_USER=/root/microbiome/microbiome/metage_v2.88.2/plot_theme_profile.R
         source /root/anaconda3/etc/profile.d/conda.sh
         conda activate py39
+        KRAKEN2_ARGS=""
+        KRAKEN2_ANNO="${default="" kraken2_anno_dir}"
+        KRAKEN2_TAX_BASE="${default="" kraken2_tax_base_dir}"
+        KRAKEN2_TAX_DIFF="${default="" kraken2_tax_diff_dir}"
+        if [ -n "$KRAKEN2_ANNO" ]; then KRAKEN2_ARGS="$KRAKEN2_ARGS --kraken2-anno $KRAKEN2_ANNO"; fi
+        if [ -n "$KRAKEN2_TAX_BASE" ]; then KRAKEN2_ARGS="$KRAKEN2_ARGS --kraken2-tax-base $KRAKEN2_TAX_BASE"; fi
+        if [ -n "$KRAKEN2_TAX_DIFF" ]; then KRAKEN2_ARGS="$KRAKEN2_ARGS --kraken2-tax-diff $KRAKEN2_TAX_DIFF"; fi
         python /root/microbiome/microbiome/metage_v2.88.2/collect_res_update.py \
             --res1 ${Res1} --res2 ${Res2} --res3 ${Res3} --res4 ${Res4} --res5 ${Res5} \
             --readme /root/microbiome/microbiome/metage_v2.88.2 \
-            --outdir Result_update
+            --outdir Result_update $KRAKEN2_ARGS
         QC_CLEANDIR="${default="" qc_cleandir}"
         if [ -n "$QC_CLEANDIR" ]; then
             python /root/microbiome/microbiome/metage_v2.88.2/replot_qc_update.py \
@@ -1940,6 +1956,9 @@ task coll_res_ana_bins {
     File Res5
     File Res6
     File? display_name_map
+    File? kraken2_anno_dir
+    File? kraken2_tax_base_dir
+    File? kraken2_tax_diff_dir
     String host
     File? qc_cleandir
     File plot_style
@@ -1955,10 +1974,17 @@ task coll_res_ana_bins {
         export R_PROFILE_USER=/root/microbiome/microbiome/metage_v2.88.2/plot_theme_profile.R
         source /root/anaconda3/etc/profile.d/conda.sh
         conda activate py39
+        KRAKEN2_ARGS=""
+        KRAKEN2_ANNO="${default="" kraken2_anno_dir}"
+        KRAKEN2_TAX_BASE="${default="" kraken2_tax_base_dir}"
+        KRAKEN2_TAX_DIFF="${default="" kraken2_tax_diff_dir}"
+        if [ -n "$KRAKEN2_ANNO" ]; then KRAKEN2_ARGS="$KRAKEN2_ARGS --kraken2-anno $KRAKEN2_ANNO"; fi
+        if [ -n "$KRAKEN2_TAX_BASE" ]; then KRAKEN2_ARGS="$KRAKEN2_ARGS --kraken2-tax-base $KRAKEN2_TAX_BASE"; fi
+        if [ -n "$KRAKEN2_TAX_DIFF" ]; then KRAKEN2_ARGS="$KRAKEN2_ARGS --kraken2-tax-diff $KRAKEN2_TAX_DIFF"; fi
         python /root/microbiome/microbiome/metage_v2.88.2/collect_res_bins_update.py \
             --res1 ${Res1} --res2 ${Res2} --res3 ${Res3} --res4 ${Res4} --res5 ${Res5} --res6 ${Res6} \
             --readme /root/microbiome/microbiome/metage_v2.88.2 \
-            --outdir Result_update
+            --outdir Result_update $KRAKEN2_ARGS
         QC_CLEANDIR="${default="" qc_cleandir}"
         if [ -n "$QC_CLEANDIR" ]; then
             python /root/microbiome/microbiome/metage_v2.88.2/replot_qc_update.py \
