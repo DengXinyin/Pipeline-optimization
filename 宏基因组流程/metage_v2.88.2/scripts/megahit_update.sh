@@ -11,9 +11,9 @@ cle_hodir=${2}
 tmpdir=${3}
 type=${4}
 
-# 与 v2.87 的 MEGAHIT 参数保持一致。
-PARALLEL_J=${PARALLEL_J:-7}
-MEGAHIT_T=${MEGAHIT_T:-12}
+# 并行数和单样本线程数由 WDL 通过环境变量传入；保留默认值便于单独运行脚本。
+PARALLEL_J=${PARALLEL_J:-12}
+MEGAHIT_T=${MEGAHIT_T:-7}
 SEQKIT_J=${SEQKIT_J:-36}
 MEMFREE=${MEMFREE:-30G}
 
@@ -32,7 +32,7 @@ awk 'NR!=1 {print}' "${datadir}/sample.txt" | while read id; do
     echo "${tmpdir}/${sample}" >> "${tmpdir}/sample.name.txt"
 done
 
-# 运行参数与 v2.87 完全一致：7 个样本并行，每样本 12 线程，
+# 当前配置：12 个样本并行，每个样本 7 线程，
 # 不传 --min-count。
 echo "[INFO] Running v2.87-compatible megahit: PARALLEL_J=${PARALLEL_J}, MEGAHIT_T=${MEGAHIT_T}, MEMFREE=${MEMFREE}"
 

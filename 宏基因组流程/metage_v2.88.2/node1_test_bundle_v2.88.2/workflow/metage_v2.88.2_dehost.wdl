@@ -1,6 +1,6 @@
 # Legacy draft-2 platform compatibility build.
 # Dehost-enabled derivative of the canonical metage_v2.88.2 workflow.
-# The canonical metage_v2.88.2.wdl is intentionally left unchanged.
+# Resource configuration is kept synchronized with the canonical workflow.
 
 
 workflow metage_v2_88_2_dehost {
@@ -26,6 +26,11 @@ workflow metage_v2_88_2_dehost {
     # kraken2 optional species annotation
     String use_kraken2 = "no"
     String kraken2_db = "/public/nfs_data/public_file_data/metagenome-DB/database/Kraken2"
+
+    # MEGAHIT resource configuration
+    Int megahit_parallel_jobs = 12
+    Int megahit_threads = 7
+    String megahit_run_memory = "512 GB"
 
     # reference genome assembly / mapping / SNP calling
     # 可选：仅提供有效样本名时才启用参考组装、比对和 SNP 分支。
@@ -229,7 +234,10 @@ workflow metage_v2_88_2_dehost {
                 datapath=check_input_with_raw.result,
                 clean_dir=kneaddata_no.cleandir,
                 host=host,
-                dehost_dir=kneaddata_no.dohost_dir
+                dehost_dir=kneaddata_no.dohost_dir,
+                megahit_parallel_jobs=megahit_parallel_jobs,
+                megahit_threads=megahit_threads,
+                megahit_run_memory=megahit_run_memory
         }
 
         if (binning == 'yes'){
@@ -1334,6 +1342,9 @@ task megahit_no {
     String host
     File clean_dir
     File dehost_dir
+    Int megahit_parallel_jobs = 12
+    Int megahit_threads = 7
+    String megahit_run_memory = "512 GB"
 
 
     command <<<
@@ -1341,6 +1352,9 @@ task megahit_no {
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Start task megahit_no"
         source /root/anaconda3/etc/profile.d/conda.sh
         conda activate megahit
+        export PARALLEL_J=${megahit_parallel_jobs}
+        export MEGAHIT_T=${megahit_threads}
+        echo "[INFO] MEGAHIT configuration: $PARALLEL_J parallel jobs x $MEGAHIT_T threads/job"
         python /root/microbiome/microbiome/metage_v2.88.2/megahit_update.py \
             -I ${datapath} \
             --cleandir ${clean_dir} \
@@ -1359,8 +1373,8 @@ task megahit_no {
     >>>
     runtime {
         docker:"dockerhub.genostack.com/sanshu/metage:v2.88.2"
-        cpu:"96"
-        memory:"720 GB"
+        cpu:"88"
+        memory:"${megahit_run_memory}"
     }
     output {
         File megahit ="megahit"

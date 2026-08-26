@@ -3,7 +3,8 @@
 # By: Wang Li 2024
 # 20260624_update: 修复 Docker 挂载点 /megahit 已存在时 FileExistsError 的问题；
 #                  调用优化后的 megahit_update.sh。
-#                  并行策略恢复为与原代码一致：6 样本同时并行 × 12 线程/样本。
+#                  并行策略由 WDL 通过 PARALLEL_J / MEGAHIT_T 传入；
+#                  当前 v2.88.2 默认配置为 12 样本同时并行 × 7 线程/样本。
 #                  上一个版本见 megahit_update_V1.py / megahit_update_V1.sh。
 
 import os
